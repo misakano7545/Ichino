@@ -6,6 +6,7 @@ import '../models/session_model.dart';
 import '../models/session_share.dart';
 import '../services/file_picker_service.dart';
 import '../services/qr_service.dart';
+import '../services/title_api_service.dart';
 import '../widgets/app_notice.dart';
 import 'home_page.dart';
 import 'settings_page.dart';
@@ -22,7 +23,6 @@ class LoginPage extends StatefulWidget {
 
 class _LoginPageState extends State<LoginPage> {
   final _qrController = TextEditingController();
-  String _qrCode = '';
   String _rawInput = '';
   SessionShare? _share;
   bool _loading = false;
@@ -38,7 +38,6 @@ class _LoginPageState extends State<LoginPage> {
     final text = value.trim();
     setState(() {
       _rawInput = text;
-      _qrCode = SessionModel.extractQRCode(text);
       _share = SessionShare.tryDecode(text);
     });
   }
@@ -51,12 +50,9 @@ class _LoginPageState extends State<LoginPage> {
       final result = await decodeQRFromBytes(bytes);
 
       if (result != null && result.isNotEmpty) {
+        if (!mounted) return;
         _qrController.text = result;
-        setState(() {
-          _rawInput = result.trim();
-          _qrCode = SessionModel.extractQRCode(result);
-          _share = SessionShare.tryDecode(result);
-        });
+        _onQRContentChanged(result);
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(content: Text(AppStrings.qrScanSuccess)),
@@ -79,18 +75,11 @@ class _LoginPageState extends State<LoginPage> {
   }
 
   Future<void> _onLogin() async {
-    if (_qrCode.isEmpty) return;
-
-    // 令牌是粘贴内容的后 64 位，前缀可能在截取之后就没了，所以要拿原文判断；
-    // 认不出来时必须给提示，否则点了按钮一声不响，像是坏了。
-    if (!_rawInput.contains('SGWCMAID')) {
-      context.showSnack(AppStrings.qrTokenUnrecognized);
-      return;
-    }
+    if (_rawInput.isEmpty) return;
     setState(() => _loading = true);
 
     try {
-      final result = await SessionModel.instance.loginWithQr(_qrCode);
+      final result = await SessionModel.instance.loginWithQr(_rawInput);
 
       if (!mounted) return;
 
@@ -105,18 +94,22 @@ class _LoginPageState extends State<LoginPage> {
           ),
         );
       } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              '${AppStrings.loginFailed} (errorID: ${result.errorId})',
-            ),
-          ),
+        context.showSnack(
+          '${AppStrings.loginFailed}：'
+          '${result.message ?? 'errorID=${result.errorId}'}',
         );
+      }
+    } on FormatException catch (e) {
+      // 令牌格式不对 / 没配 Keychip：登录请求根本没发出去，要说清楚是哪一种。
+      if (mounted) {
+        context.showSnack('${AppStrings.qrTokenUnrecognized}：${e.message}');
       }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('${AppStrings.requestFailed}: $e')),
+          SnackBar(
+            content: Text('${AppStrings.requestFailed}: ${describeApiError(e)}'),
+          ),
         );
       }
     } finally {
@@ -155,7 +148,9 @@ class _LoginPageState extends State<LoginPage> {
       );
     } catch (e) {
       if (mounted) {
-        context.showSnack('${AppStrings.sessionRestoreFailed}: $e');
+        context.showSnack(
+          '${AppStrings.sessionRestoreFailed}: ${describeApiError(e)}',
+        );
       }
     } finally {
       if (mounted) setState(() => _loading = false);
@@ -285,7 +280,7 @@ class _LoginPageState extends State<LoginPage> {
                       child: FilledButton.icon(
                         onPressed: isRestore
                             ? (_loading ? null : _onRestoreSession)
-                            : (_qrCode.isNotEmpty && !_loading)
+                            : (_rawInput.isNotEmpty && !_loading)
                             ? _onLogin
                             : null,
                         icon: _loading

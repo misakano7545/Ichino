@@ -12,7 +12,7 @@ class AppStrings {
   // Login
   static const appTitle = 'Ichino';
   static const qrCodeToken = 'QR Code 令牌';
-  static const qrHint = '粘贴二维码解析内容... / 粘贴连接信息';
+  static const qrHint = '粘贴二维码解析内容或二维码链接... / 粘贴连接信息';
   static const uploadQR = '上传二维码';
   static const login = '登录';
   static const loggingIn = '登录中...';
@@ -21,7 +21,7 @@ class AppStrings {
   static const qrScanError = '解析失败';
   static const forcePreviewApi = '强制使用 Preview API';
   static const loginFailed = '登录失败';
-  static const qrTokenUnrecognized = '没认出 QR 令牌（内容里应当含 SGWCMAID），也可以粘贴「连接信息」。';
+  static const qrTokenUnrecognized = '没认出 QR 令牌';
   static const requestFailed = '请求失败';
   static const settingsTooltip = '设置';
 
@@ -164,6 +164,7 @@ class AppStrings {
   static const authServerSettings = 'Auth Server';
   static const machineSettings = '机器信息';
   static const save = '保存';
+  static const configSaved = '配置已保存';
   static const labelTitleServerUrl = 'Title Server URL';
   static const hintTitleServerUrl = '';
   static const labelAesKey = 'AES Key';
@@ -185,11 +186,8 @@ class AppStrings {
   static const labelPlaceName = 'Place 名称';
   static const hintPlaceName = 'Place name';
   static const labelKeychipId = 'Keychip ID';
-  static const hintKeychipId = 'ID';
-  static const labelAimeUrl = 'Aime URL';
-  static const hintAimeUrl = '';
-  static const labelAimeSalt = 'Aime Salt';
-  static const hintAimeSalt = 'API Key 派生用 Salt';
+  static const helpKeychipId =
+      '机台完整 Keychip（如 A63E-01C30471007）；只填 11 位短值时按 Place ID 补全';
   static String fieldRequired(String label) => '$label 不能为空';
 
   // Config Export/Import

@@ -1,15 +1,16 @@
 
 import 'package:flutter/material.dart';
 
-import '../config/responsive.dart';
 import '../config/strings.dart';
-import '../config/title_server_config.dart';
+import '../models/session_model.dart';
 import '../models/user_kaleidx_scope.dart';
 import '../services/title_api_service.dart';
 import '../services/user_all_payload_builder.dart';
 import '../widgets/app_card.dart';
 import '../widgets/app_notice.dart';
 import '../widgets/cooldown_mixin.dart';
+import '../widgets/risk/risk_run_mixin.dart';
+import '../widgets/risk/risk_widgets.dart';
 import '../widgets/step_progress.dart';
 
 /// 万花筒专区：发现新的宿命之门、获取门的钥匙、设置门的通关状态。
@@ -41,7 +42,7 @@ class KaleidxScopePage extends StatefulWidget {
 enum _ClearChoice { keep, cleared, uncleared }
 
 class _KaleidxScopePageState extends State<KaleidxScopePage>
-    with CooldownMixin<KaleidxScopePage> {
+    with CooldownMixin<KaleidxScopePage>, RiskRunMixin<KaleidxScopePage> {
   final _gateIdController = TextEditingController();
   final List<int> _pending = [];
 
@@ -51,12 +52,6 @@ class _KaleidxScopePageState extends State<KaleidxScopePage>
 
   Map<String, Map<String, dynamic>> _userAllData = const {};
   List<UserKaleidxScopeBean> _serverScopes = const [];
-
-  bool _loading = false;
-  bool _running = false;
-  bool _autoLogout = true;
-  RiskStep _step = RiskStep.idle;
-  String _stepMessage = '';
 
   @override
   int? get cooldownLoginDateTime => widget.loginDateTime;
@@ -120,11 +115,13 @@ class _KaleidxScopePageState extends State<KaleidxScopePage>
   }
 
   Future<void> _fetchData() async {
-    if (!TitleServerConfigHolder().isConfigured) return;
-    setState(() => _loading = true);
+    final service = SessionModel.instance.createTitleService(
+      cookies: widget.cookies,
+    );
+    if (service == null) return;
+    setRiskFetching(true);
 
     try {
-      final service = TitleApiService.fromHolder(cookies: widget.cookies)!;
       final results = await Future.wait([
         service.fetchUserAllData(widget.userId),
         service.getUserKaleidxScopes(widget.userId),
@@ -133,28 +130,25 @@ class _KaleidxScopePageState extends State<KaleidxScopePage>
       setState(() {
         _userAllData = results[0] as Map<String, Map<String, dynamic>>;
         _serverScopes = results[1] as List<UserKaleidxScopeBean>;
-        _loading = false;
+        riskFetching = false;
       });
     } catch (e) {
       if (!mounted) return;
-      setState(() => _loading = false);
-      _snack('${AppStrings.loadFailed}: $e');
+      setState(() => riskFetching = false);
+      _snack('${AppStrings.loadFailed}: ${describeApiError(e)}');
     }
   }
 
   Future<void> _run() async {
-    if (!TitleServerConfigHolder().isConfigured) {
-      _snack(AppStrings.ticketNotConfigured);
-      return;
-    }
-    final loginDateTime = widget.loginDateTime;
-    final loginId = widget.loginId;
-    if (loginDateTime == null || loginId == null) {
-      _snack(AppStrings.kaleidxNotLoggedIn);
-      return;
-    }
-    if (cooldownRemaining > 0) {
-      _snack(AppStrings.kaleidxCooldownNotice(cooldownRemaining));
+    final guard = riskPreconditionError(
+      loginDateTime: widget.loginDateTime,
+      loginId: widget.loginId,
+      cooldownRemaining: cooldownRemaining,
+      notLoggedInMessage: AppStrings.kaleidxNotLoggedIn,
+      cooldownNotice: AppStrings.kaleidxCooldownNotice,
+    );
+    if (guard != null) {
+      _snack(guard);
       return;
     }
     if (_pending.isEmpty) {
@@ -166,15 +160,19 @@ class _KaleidxScopePageState extends State<KaleidxScopePage>
       return;
     }
 
-    setState(() => _running = true);
+    final loginDateTime = widget.loginDateTime!;
+    final loginId = widget.loginId!;
+    setRiskRunning(true);
 
     try {
-      final service = TitleApiService.fromHolder(cookies: widget.cookies)!;
+      final service = SessionModel.instance.createTitleService(
+        cookies: widget.cookies,
+      )!;
       final builder = UserAllPayloadBuilder(service.config);
 
       var data = _userAllData;
       if (data.isEmpty || _serverScopes.isEmpty) {
-        _updateStep(RiskStep.fetchData);
+        updateRiskStep(RiskStep.fetchData);
         final results = await Future.wait([
           service.fetchUserAllData(widget.userId),
           service.getUserKaleidxScopes(widget.userId),
@@ -188,7 +186,7 @@ class _KaleidxScopePageState extends State<KaleidxScopePage>
         }
       }
 
-      _updateStep(RiskStep.upload);
+      updateRiskStep(RiskStep.upload);
       final packet = builder.build(
         userId: widget.userId,
         loginId: loginId,
@@ -209,20 +207,12 @@ class _KaleidxScopePageState extends State<KaleidxScopePage>
       );
 
       await service.upsertUserAll(packet, widget.userId);
-      _updateStep(RiskStep.complete, await _verify(service));
-
-      if (_autoLogout && widget.onExitToTitle != null) {
-        await Future.delayed(const Duration(seconds: 2));
-        if (!mounted) return;
-        _updateStep(RiskStep.logout, AppStrings.exitingToTitle);
-        await widget.onExitToTitle!();
-      }
-    } on TitleApiException catch (e) {
-      _updateStep(RiskStep.failed, e.message);
+      updateRiskStep(RiskStep.complete, await _verify(service));
+      await autoLogoutAndExit(widget.onExitToTitle);
     } catch (e) {
-      _updateStep(RiskStep.failed, '$e');
+      reportRiskError(e);
     } finally {
-      if (mounted) setState(() => _running = false);
+      setRiskRunning(false);
     }
   }
 
@@ -232,7 +222,7 @@ class _KaleidxScopePageState extends State<KaleidxScopePage>
     try {
       rows = await service.getUserKaleidxScopes(widget.userId);
     } catch (e) {
-      return AppStrings.kaleidxVerifyFailed('$e');
+      return AppStrings.kaleidxVerifyFailed(describeApiError(e));
     }
     if (mounted) setState(() => _serverScopes = rows);
 
@@ -246,106 +236,73 @@ class _KaleidxScopePageState extends State<KaleidxScopePage>
     return AppStrings.kaleidxVerified(saved.length);
   }
 
-  void _updateStep(RiskStep step, [String? message]) {
-    if (!mounted) return;
-    setState(() {
-      _step = step;
-      _stepMessage = message ?? '';
-    });
-  }
-
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
 
     return Scaffold(
       appBar: AppBar(title: const Text(AppStrings.kaleidxFeatureTitle)),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(16),
-        child: responsiveBody(
-          context,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              if (!isLoggedIn)
-                const AppNotice(AppStrings.kaleidxNotLoggedIn, error: true),
-              if (isLoggedIn && cooldownRemaining > 0)
-                AppNotice(
-                  AppStrings.kaleidxCooldownNotice(cooldownRemaining),
-                ),
-              AppCard(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const SectionTitle(
-                      icon: Icons.science_outlined,
-                      title: AppStrings.kaleidxFeatureTitle,
-                    ),
-                    const SizedBox(height: 12),
-                    Text(
-                      AppStrings.kaleidxFeatureDesc,
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: theme.colorScheme.onSurfaceVariant,
-                        height: 1.5,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 12),
-              _inputCard(theme),
-              const SizedBox(height: 12),
-              _fetchCard(theme),
-              const SizedBox(height: 12),
-              AutoLogoutToggle(
-                value: _autoLogout,
-                enabled: widget.onExitToTitle != null && !_running,
-                onChanged: (v) => setState(() => _autoLogout = v),
-              ),
-              const SizedBox(height: 12),
-              _runButton(theme),
-              if (_step != RiskStep.idle) ...[
-                const SizedBox(height: 16),
-                StepProgressCard(
-                  step: _step,
-                  message: _stepMessage,
-                  steps: [
-                    (RiskStep.fetchData, AppStrings.kaleidxStepFetch),
-                    (RiskStep.upload, AppStrings.kaleidxStepUpload),
-                    if (_autoLogout) (RiskStep.logout, AppStrings.stepLogout),
-                  ],
-                ),
-              ],
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _checkRow({
-    required String label,
-    required bool value,
-    required bool enabled,
-    required ValueChanged<bool> onChanged,
-  }) {
-    return InkWell(
-      borderRadius: BorderRadius.circular(10),
-      onTap: enabled ? () => onChanged(!value) : null,
-      child: Row(
+      body: RiskPageBody(
         children: [
-          Checkbox(
-            value: value,
-            onChanged: enabled ? (v) => onChanged(v ?? false) : null,
+          RiskStatusNotices(
+            isLoggedIn: isLoggedIn,
+            cooldownRemaining: cooldownRemaining,
+            notLoggedInText: AppStrings.kaleidxNotLoggedIn,
+            cooldownText: AppStrings.kaleidxCooldownNotice,
           ),
-          Expanded(child: Text(label)),
+          RiskFeatureCard(
+            icon: Icons.science_outlined,
+            title: AppStrings.kaleidxFeatureTitle,
+            description: AppStrings.kaleidxFeatureDesc,
+          ),
+          const SizedBox(height: 12),
+          _inputCard(theme),
+          const SizedBox(height: 12),
+          RiskFetchCard(
+            hasData: _userAllData.isNotEmpty,
+            statusText: _userAllData.isNotEmpty
+                ? '${AppStrings.kaleidxFetched} (${_serverScopes.length})'
+                : AppStrings.kaleidxNoData,
+            loadingLabel: AppStrings.travelPartnerFetching,
+            actionLabel: AppStrings.kaleidxFetchData,
+            loading: riskFetching,
+            enabled: !riskRunning,
+            onFetch: _fetchData,
+          ),
+          const SizedBox(height: 12),
+          AutoLogoutToggle(
+            value: riskAutoLogout,
+            enabled: widget.onExitToTitle != null && !riskRunning,
+            onChanged: setRiskAutoLogout,
+          ),
+          const SizedBox(height: 12),
+          RiskRunButton(
+            running: riskRunning,
+            enabled: isLoggedIn,
+            icon: Icons.lock_open_outlined,
+            label: AppStrings.kaleidxRun,
+            runningLabel: AppStrings.kaleidxRunning,
+            onPressed: _run,
+          ),
+          if (riskStep != RiskStep.idle) ...[
+            const SizedBox(height: 16),
+            StepProgressCard(
+              step: riskStep,
+              message: riskStepMessage,
+              steps: [
+                (RiskStep.fetchData, AppStrings.kaleidxStepFetch),
+                (RiskStep.upload, AppStrings.kaleidxStepUpload),
+                if (riskAutoLogout) (RiskStep.logout, AppStrings.stepLogout),
+              ],
+            ),
+          ],
         ],
       ),
     );
   }
 
   Widget _inputCard(ThemeData theme) {
-    final enabled = !_running;
+    final enabled = !riskRunning;
     return AppCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -376,13 +333,13 @@ class _KaleidxScopePageState extends State<KaleidxScopePage>
             ),
           ),
           const SizedBox(height: 4),
-          _checkRow(
+          RiskCheckRow(
             label: AppStrings.kaleidxActionDiscover,
             value: _discover,
             enabled: enabled,
             onChanged: (v) => setState(() => _discover = v),
           ),
-          _checkRow(
+          RiskCheckRow(
             label: AppStrings.kaleidxActionKey,
             value: _giveKey,
             enabled: enabled,
@@ -464,84 +421,6 @@ class _KaleidxScopePageState extends State<KaleidxScopePage>
       row.isGateFound,
       row.isKeyFound,
       row.isClear,
-    );
-  }
-
-  Widget _fetchCard(ThemeData theme) {
-    final hasData = _userAllData.isNotEmpty;
-    return AppCard(
-      child: Row(
-        children: [
-          Icon(
-            hasData ? Icons.check_circle : Icons.download,
-            size: 18,
-            color: hasData ? Colors.green : theme.colorScheme.primary,
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              hasData
-                  ? '${AppStrings.kaleidxFetched} (${_serverScopes.length})'
-                  : AppStrings.kaleidxNoData,
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: hasData
-                    ? Colors.green
-                    : theme.colorScheme.onSurfaceVariant,
-              ),
-            ),
-          ),
-          SizedBox(
-            height: 32,
-            child: OutlinedButton.icon(
-              onPressed: _loading || _running ? null : _fetchData,
-              icon: _loading
-                  ? const SizedBox(
-                      width: 14,
-                      height: 14,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.refresh, size: 16),
-              label: Text(
-                _loading
-                    ? AppStrings.travelPartnerFetching
-                    : AppStrings.kaleidxFetchData,
-                style: theme.textTheme.labelSmall,
-              ),
-              style: OutlinedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(horizontal: 12),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(8),
-                ),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _runButton(ThemeData theme) {
-    return SizedBox(
-      width: double.infinity,
-      child: FilledButton.icon(
-        onPressed: _running || !isLoggedIn ? null : _run,
-        icon: _running
-            ? const SizedBox(
-                width: 20,
-                height: 20,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              )
-            : const Icon(Icons.lock_open_outlined, size: 20),
-        label: Text(
-          _running ? AppStrings.kaleidxRunning : AppStrings.kaleidxRun,
-        ),
-        style: FilledButton.styleFrom(
-          padding: const EdgeInsets.symmetric(vertical: 14),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12),
-          ),
-        ),
-      ),
     );
   }
 }

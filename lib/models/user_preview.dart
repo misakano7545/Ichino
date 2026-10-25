@@ -1,3 +1,5 @@
+import '../core/json_value.dart';
+
 class UserPreviewDataBean {
   final int userId;
   final String userName;
@@ -49,48 +51,28 @@ class UserPreviewDataBean {
   });
 
   factory UserPreviewDataBean.fromJson(Map<String, dynamic> json) {
-    int toInt(dynamic v) {
-      if (v == null) return 0;
-      if (v is int) return v;
-      if (v is String) return int.tryParse(v) ?? 0;
-      if (v is double) return v.toInt();
-      return 0;
-    }
-
-    bool toBool(dynamic v) {
-      if (v == null) return false;
-      if (v is bool) return v;
-      if (v is int) return v != 0;
-      if (v is String) return v == '1' || v.toLowerCase() == 'true';
-      return false;
-    }
-
-    String toStr(dynamic v) => v?.toString() ?? '';
-
     return UserPreviewDataBean(
-      userId: toInt(json['userId']),
-      userName: toStr(json['userName']),
-      isLogin: toBool(json['isLogin']),
-      loginId: toInt(json['loginId']),
-      lastGameId: toStr(json['lastGameId']),
-      lastRomVersion: toStr(json['lastRomVersion']),
-      lastDataVersion: toStr(json['lastDataVersion']),
-      lastLoginDate: toStr(json['lastLoginDate']),
-      lastPlayDate: toStr(json['lastPlayDate']),
-      playerRating: toInt(json['playerRating']),
-      nameplateId: toInt(json['nameplateId']),
-      iconId: toInt(json['iconId']),
-      trophyId: toInt(json['trophyId']),
-      isNetMember: toBool(json['isNetMember']),
-      isInherit: toBool(json['isInherit']),
-      totalAwake: toInt(json['totalAwake']),
-      dispRate: toInt(json['dispRate']),
-      dailyBonusDate: toStr(json['dailyBonusDate']),
-      headPhoneVolume: (json['headPhoneVolume'] is String)
-          ? (int.tryParse(json['headPhoneVolume']) ?? 0)
-          : toInt(json['headPhoneVolume']),
-      banState: toInt(json['banState']),
-      errorId: toInt(json['errorId']),
+      userId: jsonInt(json['userId']),
+      userName: jsonString(json['userName']),
+      isLogin: jsonBool(json['isLogin']),
+      loginId: jsonInt(json['loginId']),
+      lastGameId: jsonString(json['lastGameId']),
+      lastRomVersion: jsonString(json['lastRomVersion']),
+      lastDataVersion: jsonString(json['lastDataVersion']),
+      lastLoginDate: jsonString(json['lastLoginDate']),
+      lastPlayDate: jsonString(json['lastPlayDate']),
+      playerRating: jsonInt(json['playerRating']),
+      nameplateId: jsonInt(json['nameplateId']),
+      iconId: jsonInt(json['iconId']),
+      trophyId: jsonInt(json['trophyId']),
+      isNetMember: jsonBool(json['isNetMember']),
+      isInherit: jsonBool(json['isInherit']),
+      totalAwake: jsonInt(json['totalAwake']),
+      dispRate: jsonInt(json['dispRate']),
+      dailyBonusDate: jsonString(json['dailyBonusDate']),
+      headPhoneVolume: jsonInt(json['headPhoneVolume']),
+      banState: jsonInt(json['banState']),
+      errorId: jsonInt(json['errorId']),
     );
   }
 }

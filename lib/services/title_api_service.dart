@@ -8,6 +8,7 @@ import 'package:http/http.dart' as http;
 import 'package:pointycastle/export.dart';
 
 import '../config/title_server_config.dart';
+import '../core/date_time_format.dart';
 import '../models/user_data.dart';
 import 'api_log.dart';
 import '../models/user_character.dart';
@@ -21,6 +22,12 @@ class TitleApiException implements Exception {
   @override
   String toString() => 'TitleApiException: $message';
 }
+
+/// 面向用户的错误文本：协议层异常只取 message，其余保留 `toString()` 便于排查。
+String describeApiError(Object error) =>
+    error is TitleApiException ? error.message : error.toString();
+
+typedef CookiesChangedCallback = void Function(String cookies);
 
 class UserLoginResult {
   final String token;
@@ -39,21 +46,37 @@ class UserLoginResult {
 class TitleApiService {
   static const String _obfuscateConstant = 'MaimaiChn';
 
-  static String? lastRawResponse;
+  /// 最近一次 `captureRaw` 请求的响应原文（主页调试卡用）。
+  String? lastRawResponse;
 
   final TitleServerConfig _config;
+  final CookiesChangedCallback? onCookiesChanged;
   String? _cookies;
 
-  TitleApiService(this._config, {this._cookies});
+  // 私有命名参数不合法（不能写 `this._cookies`），只能手写初始化。
+  TitleApiService(
+    this._config, {
+    String? cookies,
+    this.onCookiesChanged,
+  }) :
+       // ignore: prefer_initializing_formals
+       _cookies = cookies;
 
   /// 从 [TitleServerConfigHolder] 构造；未配置时返回 `null`。
   ///
   /// 各页原本都写 `if (!holder.isConfigured) ...; TitleApiService(holder.config!, ...)`，
   /// 收口成一个工厂，避免 `config!` 与 `isConfigured` 散落在十几个地方。
-  static TitleApiService? fromHolder({String? cookies}) {
+  static TitleApiService? fromHolder({
+    String? cookies,
+    CookiesChangedCallback? onCookiesChanged,
+  }) {
     final holder = TitleServerConfigHolder();
     if (!holder.isConfigured) return null;
-    return TitleApiService(holder.config!, cookies: cookies);
+    return TitleApiService(
+      holder.config!,
+      cookies: cookies,
+      onCookiesChanged: onCookiesChanged,
+    );
   }
 
   String? get cookies => _cookies;
@@ -122,6 +145,7 @@ class TitleApiService {
       if (match != null) {
         _cookies = 'JSESSIONID=${match.group(1)!.trim()}';
         ApiLog.log('[$apiName] >>> Captured session cookie: $_cookies');
+        onCookiesChanged?.call(_cookies!);
         return;
       }
     }
@@ -243,8 +267,8 @@ class TitleApiService {
     required int userId,
     required String token,
   }) async {
-    // 走通用传输层，保留 `lastRawResponse`（主页调试卡要用 GetUserPreviewApi
-    // 的原文，而不是随后 UserLoginApi / GetUserDataApi 的）。
+    // 走通用传输层，把 GetUserPreviewApi 的原文留在实例上（主页调试卡要用它，
+    // 而不是随后 UserLoginApi / GetUserDataApi 的响应）。
     final json = await _callApi(
       'GetUserPreviewApi',
       {
@@ -386,10 +410,8 @@ class TitleApiService {
     final now = DateTime.now();
     final validDate = DateTime(now.year, now.month, now.day, 4, 0, 0)
         .add(const Duration(days: 90));
-    final purchaseDateStr = _formatDateTime(now);
-    final validDateStr =
-        '${validDate.year}-${validDate.month.toString().padLeft(2, '0')}-${validDate.day.toString().padLeft(2, '0')} '
-        '${validDate.hour.toString().padLeft(2, '0')}:${validDate.minute.toString().padLeft(2, '0')}:${validDate.second.toString().padLeft(2, '0')}';
+    final purchaseDateStr = formatPlayDateTime(now);
+    final validDateStr = formatDateTime(validDate);
 
     final packet = {
       'userId': userId,
@@ -414,11 +436,6 @@ class TitleApiService {
 
     final json = await _callApi(apiName, packet, userId);
     _checkReturnCode(json, apiName);
-  }
-
-  String _formatDateTime(DateTime dt) {
-    return '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')} '
-        '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}:${dt.second.toString().padLeft(2, '0')}.0';
   }
 
   // ---- UpsertUserAll (发包) ----

@@ -1,14 +1,16 @@
 
 import 'package:flutter/material.dart';
 
-import '../config/responsive.dart';
 import '../config/strings.dart';
-import '../config/title_server_config.dart';
+import '../core/json_value.dart';
+import '../models/session_model.dart';
 import '../services/title_api_service.dart';
 import '../services/user_all_payload_builder.dart';
 import '../widgets/app_card.dart';
 import '../widgets/app_notice.dart';
 import '../widgets/cooldown_mixin.dart';
+import '../widgets/risk/risk_run_mixin.dart';
+import '../widgets/risk/risk_widgets.dart';
 import '../widgets/step_progress.dart';
 
 /// 数值修改：Rating 与舞里程。两者的流程一模一样（拉数据 → 改一个数 →
@@ -98,17 +100,11 @@ class NumberPatchView extends StatefulWidget {
 }
 
 class _NumberPatchViewState extends State<NumberPatchView>
-    with CooldownMixin<NumberPatchView> {
+    with CooldownMixin<NumberPatchView>, RiskRunMixin<NumberPatchView> {
   final _valueController = TextEditingController();
 
   Map<String, Map<String, dynamic>> _userAllData = const {};
   bool _maiMileAdd = true;
-
-  bool _loading = false;
-  bool _running = false;
-  bool _autoLogout = true;
-  RiskStep _step = RiskStep.idle;
-  String _stepMessage = '';
 
   bool get _isRating => widget.mode == NumberPatchMode.rating;
 
@@ -123,18 +119,11 @@ class _NumberPatchViewState extends State<NumberPatchView>
 
   void _snack(String message) => context.showSnack(message);
 
-  static int _toInt(dynamic v) {
-    if (v is int) return v;
-    if (v is num) return v.toInt();
-    if (v is String) return int.tryParse(v) ?? 0;
-    return 0;
-  }
-
   /// 从已拉取的 GetUserDataApi 里读当前值，供「累加」和界面上的当前值展示。
   int _currentOf(Map<String, Map<String, dynamic>> data, String field) {
     final userData = data['GetUserDataApi']?['userData'];
     if (userData is! Map) return 0;
-    return _toInt(userData[field]);
+    return jsonInt(userData[field]);
   }
 
   int get _currentRating => _currentOf(_userAllData, 'playerRating');
@@ -172,37 +161,36 @@ class _NumberPatchViewState extends State<NumberPatchView>
   }
 
   Future<void> _fetchData() async {
-    if (!TitleServerConfigHolder().isConfigured) return;
-    setState(() => _loading = true);
+    final service = SessionModel.instance.createTitleService(
+      cookies: widget.cookies,
+    );
+    if (service == null) return;
+    setRiskFetching(true);
 
     try {
-      final service = TitleApiService.fromHolder(cookies: widget.cookies)!;
       final data = await service.fetchUserAllData(widget.userId);
       if (!mounted) return;
       setState(() {
         _userAllData = data;
-        _loading = false;
+        riskFetching = false;
       });
     } catch (e) {
       if (!mounted) return;
-      setState(() => _loading = false);
-      _snack('${AppStrings.loadFailed}: $e');
+      setState(() => riskFetching = false);
+      _snack('${AppStrings.loadFailed}: ${describeApiError(e)}');
     }
   }
 
   Future<void> _run() async {
-    if (!TitleServerConfigHolder().isConfigured) {
-      _snack(AppStrings.ticketNotConfigured);
-      return;
-    }
-    final loginDateTime = widget.loginDateTime;
-    final loginId = widget.loginId;
-    if (loginDateTime == null || loginId == null) {
-      _snack(AppStrings.numberPatchNotLoggedIn);
-      return;
-    }
-    if (cooldownRemaining > 0) {
-      _snack(AppStrings.numberPatchCooldownNotice(cooldownRemaining));
+    final guard = riskPreconditionError(
+      loginDateTime: widget.loginDateTime,
+      loginId: widget.loginId,
+      cooldownRemaining: cooldownRemaining,
+      notLoggedInMessage: AppStrings.numberPatchNotLoggedIn,
+      cooldownNotice: AppStrings.numberPatchCooldownNotice,
+    );
+    if (guard != null) {
+      _snack(guard);
       return;
     }
     final inputError = _checkInput();
@@ -211,21 +199,26 @@ class _NumberPatchViewState extends State<NumberPatchView>
       return;
     }
     final input = int.parse(_valueController.text.trim());
+    final loginDateTime = widget.loginDateTime!;
+    final loginId = widget.loginId!;
 
-    setState(() => _running = true);
+    setRiskRunning(true);
+    clearRiskError();
 
     try {
-      final service = TitleApiService.fromHolder(cookies: widget.cookies)!;
+      final service = SessionModel.instance.createTitleService(
+        cookies: widget.cookies,
+      )!;
       final builder = UserAllPayloadBuilder(service.config);
 
       var data = _userAllData;
       if (data.isEmpty) {
-        _updateStep(RiskStep.fetchData);
+        updateRiskStep(RiskStep.fetchData);
         data = await service.fetchUserAllData(widget.userId);
         if (mounted) setState(() => _userAllData = data);
       }
 
-      _updateStep(RiskStep.upload);
+      updateRiskStep(RiskStep.upload);
       final packet = builder.build(
         userId: widget.userId,
         loginId: loginId,
@@ -237,8 +230,7 @@ class _NumberPatchViewState extends State<NumberPatchView>
       final String resultMessage;
       if (_isRating) {
         builder.applyRatingPatch(packet, rating: input);
-        resultMessage =
-            '${AppStrings.ratingSuccess} → ${_clamp(input)}';
+        resultMessage = '${AppStrings.ratingSuccess} → ${_clamp(input)}';
       } else {
         final current = _currentOf(data, 'point');
         final total = _currentOf(data, 'totalPoint');
@@ -253,103 +245,70 @@ class _NumberPatchViewState extends State<NumberPatchView>
       }
 
       await service.upsertUserAll(packet, widget.userId);
-      _updateStep(RiskStep.complete, resultMessage);
-
-      if (_autoLogout && widget.onExitToTitle != null) {
-        await Future.delayed(const Duration(seconds: 2));
-        if (!mounted) return;
-        _updateStep(RiskStep.logout, AppStrings.exitingToTitle);
-        await widget.onExitToTitle!();
-      }
-    } on TitleApiException catch (e) {
-      _updateStep(RiskStep.failed, e.message);
+      updateRiskStep(RiskStep.complete, resultMessage);
+      await autoLogoutAndExit(widget.onExitToTitle);
     } catch (e) {
-      _updateStep(RiskStep.failed, '$e');
+      reportRiskError(e);
     } finally {
-      if (mounted) setState(() => _running = false);
+      setRiskRunning(false);
     }
-  }
-
-  void _updateStep(RiskStep step, [String? message]) {
-    if (!mounted) return;
-    setState(() {
-      _step = step;
-      _stepMessage = message ?? '';
-    });
   }
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
 
-    return SingleChildScrollView(
-      padding: const EdgeInsets.all(16),
-      child: responsiveBody(
-        context,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            if (!isLoggedIn)
-              const AppNotice(AppStrings.numberPatchNotLoggedIn, error: true),
-            if (isLoggedIn && cooldownRemaining > 0)
-              AppNotice(
-                AppStrings.numberPatchCooldownNotice(cooldownRemaining),
-              ),
-            _descCard(theme),
-            const SizedBox(height: 12),
-            _inputCard(theme),
-            const SizedBox(height: 12),
-            _fetchCard(theme),
-            const SizedBox(height: 12),
-            AutoLogoutToggle(
-              value: _autoLogout,
-              enabled: widget.onExitToTitle != null && !_running,
-              onChanged: (v) => setState(() => _autoLogout = v),
-            ),
-            const SizedBox(height: 12),
-            _runButton(theme),
-            if (_step != RiskStep.idle) ...[
-              const SizedBox(height: 16),
-              StepProgressCard(
-                step: _step,
-                message: _stepMessage,
-                steps: [
-                  (RiskStep.fetchData, AppStrings.unlockStepFetch),
-                  (RiskStep.upload, AppStrings.numberPatchStepUpload),
-                  if (_autoLogout) (RiskStep.logout, AppStrings.stepLogout),
-                ],
-              ),
-            ],
-          ],
+    return RiskPageBody(
+      children: [
+        RiskStatusNotices(
+          isLoggedIn: isLoggedIn,
+          cooldownRemaining: cooldownRemaining,
+          notLoggedInText: AppStrings.numberPatchNotLoggedIn,
+          cooldownText: AppStrings.numberPatchCooldownNotice,
         ),
-      ),
-    );
-  }
-
-  Widget _descCard(ThemeData theme) {
-    return AppCard(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SectionTitle(
-            icon: _isRating ? Icons.speed : Icons.commute,
-            title: widget.featureTitle,
-          ),
-          const SizedBox(height: 12),
-          Text(
-            widget.featureDesc,
-            style: theme.textTheme.bodySmall?.copyWith(
-              color: theme.colorScheme.onSurfaceVariant,
-              height: 1.5,
-            ),
+        RiskFeatureCard(
+          icon: _isRating ? Icons.speed : Icons.commute,
+          title: widget.featureTitle,
+          description: widget.featureDesc,
+        ),
+        const SizedBox(height: 12),
+        _inputCard(theme),
+        const SizedBox(height: 12),
+        _fetchCard(),
+        const SizedBox(height: 12),
+        AutoLogoutToggle(
+          value: riskAutoLogout,
+          enabled: widget.onExitToTitle != null && !riskRunning,
+          onChanged: setRiskAutoLogout,
+        ),
+        const SizedBox(height: 12),
+        RiskRunButton(
+          running: riskRunning,
+          enabled: isLoggedIn,
+          icon: Icons.send,
+          label: AppStrings.numberPatchRun,
+          runningLabel: AppStrings.unlockRunning,
+          onPressed: _run,
+        ),
+        if (riskStep != RiskStep.idle) ...[
+          const SizedBox(height: 16),
+          StepProgressCard(
+            step: riskStep,
+            message: riskStepMessage,
+            error: riskError,
+            steps: [
+              (RiskStep.fetchData, AppStrings.unlockStepFetch),
+              (RiskStep.upload, AppStrings.numberPatchStepUpload),
+              if (riskAutoLogout) (RiskStep.logout, AppStrings.stepLogout),
+            ],
           ),
         ],
-      ),
+      ],
     );
   }
 
   Widget _inputCard(ThemeData theme) {
-    final enabled = !_running;
+    final enabled = !riskRunning;
     final hasInput = int.tryParse(_valueController.text.trim()) != null;
 
     return AppCard(
@@ -430,89 +389,22 @@ class _NumberPatchViewState extends State<NumberPatchView>
     return AppStrings.numberPatchPreview(label, current, _previewTarget);
   }
 
-  Widget _fetchCard(ThemeData theme) {
+  Widget _fetchCard() {
     final hasData = _userAllData.isNotEmpty;
     final current = _isRating ? _currentRating : _currentPoint;
     final label = _isRating
         ? AppStrings.ratingCurrentValue
         : AppStrings.maiMileCurrentBalance;
 
-    return AppCard(
-      child: Row(
-        children: [
-          Icon(
-            hasData ? Icons.check_circle : Icons.download,
-            size: 18,
-            color: hasData ? Colors.green : theme.colorScheme.primary,
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              hasData
-                  ? '$label: $current'
-                  : AppStrings.unlockNoData,
-              style: theme.textTheme.bodySmall?.copyWith(
-                fontFamily: 'monospace',
-                color: hasData
-                    ? Colors.green
-                    : theme.colorScheme.onSurfaceVariant,
-              ),
-            ),
-          ),
-          SizedBox(
-            height: 32,
-            child: OutlinedButton.icon(
-              onPressed: _loading || _running ? null : _fetchData,
-              icon: _loading
-                  ? const SizedBox(
-                      width: 14,
-                      height: 14,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.refresh, size: 16),
-              label: Text(
-                _loading
-                    ? AppStrings.unlockFetching
-                    : hasData
-                    ? AppStrings.unlockRefetch
-                    : AppStrings.unlockFetchData,
-                style: theme.textTheme.labelSmall,
-              ),
-              style: OutlinedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(horizontal: 12),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(8),
-                ),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _runButton(ThemeData theme) {
-    return SizedBox(
-      width: double.infinity,
-      child: FilledButton.icon(
-        onPressed: _running || !isLoggedIn ? null : _run,
-        icon: _running
-            ? const SizedBox(
-                width: 20,
-                height: 20,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              )
-            : const Icon(Icons.send, size: 20),
-        label: Text(
-          _running ? AppStrings.unlockRunning : AppStrings.numberPatchRun,
-        ),
-        style: FilledButton.styleFrom(
-          padding: const EdgeInsets.symmetric(vertical: 14),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12),
-          ),
-        ),
-      ),
+    return RiskFetchCard(
+      hasData: hasData,
+      statusText: hasData ? '$label: $current' : AppStrings.unlockNoData,
+      loadingLabel: AppStrings.unlockFetching,
+      actionLabel:
+          hasData ? AppStrings.unlockRefetch : AppStrings.unlockFetchData,
+      loading: riskFetching,
+      enabled: !riskRunning,
+      onFetch: _fetchData,
     );
   }
 }

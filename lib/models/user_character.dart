@@ -1,3 +1,5 @@
+import '../core/json_value.dart';
+
 /// GetUserRatingApi 之外的角色（旅行伙伴）数据。
 ///
 /// 对应客户端 `Net.VO.Mai2.UserCharacter`：只有 4 个字段，走
@@ -36,30 +38,18 @@ class UserCharacterBean {
         useCount: useCount ?? this.useCount,
       );
 
-  static int _toInt(dynamic v) {
-    if (v == null) return 0;
-    if (v is int) return v;
-    if (v is num) return v.toInt();
-    if (v is String) return int.tryParse(v) ?? 0;
-    return 0;
-  }
-
   factory UserCharacterBean.fromJson(Map<String, dynamic> json) =>
       UserCharacterBean(
-        characterId: _toInt(json['characterId']),
-        level: _toInt(json['level']),
-        awakening: _toInt(json['awakening']),
-        useCount: _toInt(json['useCount']),
+        characterId: jsonInt(json['characterId']),
+        level: jsonInt(json['level']),
+        awakening: jsonInt(json['awakening']),
+        useCount: jsonInt(json['useCount']),
       );
 
-  static List<UserCharacterBean> listFromResponse(Map<String, dynamic> json) {
-    final raw = json['userCharacterList'];
-    if (raw is! List) return const [];
-    return raw
-        .whereType<Map<String, dynamic>>()
-        .map(UserCharacterBean.fromJson)
-        .toList();
-  }
+  static List<UserCharacterBean> listFromResponse(Map<String, dynamic> json) =>
+      jsonMapList(json['userCharacterList'])
+          .map(UserCharacterBean.fromJson)
+          .toList();
 }
 
 /// `UserDetail.charaSlot` 固定 5 个槽，槽 0 是队长

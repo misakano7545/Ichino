@@ -11,14 +11,17 @@ void main() {
     await tester.pumpWidget(const MyApp());
     await tester.pump();
 
-    // 72 位：截取的后 64 位里没有 SGWCMAID 前缀
+    // 72 位：既不是 84 位二维码串，也不是二维码链接
     await tester.enterText(find.byType(TextField), 'ABCDEF' * 12);
     await tester.pump();
 
     await tester.tap(find.text(AppStrings.login));
     await tester.pump();
 
-    expect(find.text(AppStrings.qrTokenUnrecognized), findsOneWidget);
+    expect(
+      find.textContaining(AppStrings.qrTokenUnrecognized),
+      findsOneWidget,
+    );
   });
 
   testWidgets('粘贴连接信息时按钮切成「恢复会话」', (tester) async {

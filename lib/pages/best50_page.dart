@@ -6,6 +6,7 @@ import 'package:flutter/rendering.dart';
 import '../config/responsive.dart';
 import '../config/strings.dart';
 import '../config/title_server_config.dart';
+import '../models/session_model.dart';
 import '../models/user_rating.dart';
 import '../services/music_data_service.dart';
 import '../services/png_export_service.dart';
@@ -56,7 +57,7 @@ class _Best50PageState extends State<Best50Page> {
   @override
   void didUpdateWidget(Best50Page oldWidget) {
     super.didUpdateWidget(oldWidget);
-    // 本页在 IndexedStack 里会先于 preview/登录请求被构建，cookies 到位后补一次加载。
+    // 用户可能在 preview/登录请求完成前就切到本页，cookies 到位后再补一次加载。
     if (oldWidget.cookies != widget.cookies &&
         (_rating == null || _error != null)) {
       _bootstrap();
@@ -75,7 +76,9 @@ class _Best50PageState extends State<Best50Page> {
     });
 
     try {
-      final service = TitleApiService.fromHolder(cookies: widget.cookies)!;
+      final service = SessionModel.instance.createTitleService(
+        cookies: widget.cookies,
+      )!;
       final rating = await service.getUserRatingTyped(widget.userId);
       if (!mounted) return;
       setState(() {
@@ -87,10 +90,8 @@ class _Best50PageState extends State<Best50Page> {
       await MusicDataService.instance.load();
       if (!mounted) return;
       setState(() => _musicReady = true);
-    } on TitleApiException catch (e) {
-      _fail(e.message);
     } catch (e) {
-      _fail('$e');
+      _fail(describeApiError(e));
     }
   }
 

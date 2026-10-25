@@ -41,16 +41,31 @@ login client for the maimai DX arcade game network.
 ```
 lib/
 ├── main.dart                # 入口：main() + MyApp（MaterialApp）
+├── config/                  # strings / responsive / TitleServerConfig
+├── core/
+│   ├── json_value.dart      # 宽松 JSON 数值转换（jsonInt / jsonBool / jsonMapList …）
+│   └── date_time_format.dart# UTC+8 时间戳与 yyyy-MM-dd HH:mm:ss.f 格式化
 ├── pages/
 │   ├── login_page.dart      # 登录页（QR 粘贴 / 图片识别）
-│   ├── home_page.dart       # 主页骨架（底部导航 + 各 tab）
+│   ├── home_page.dart       # 主页骨架（HomeTab 枚举 + 懒构建 IndexedStack）
+│   ├── home/
+│   │   ├── home_tab.dart       # 六个页签的标题 / 图标 / 顺序
+│   │   └── home_tab_view.dart  # 首页内容（加载 / 错误 / preview / userData 分支）
 │   ├── settings_page.dart   # Title Server / 机器参数配置
 │   └── ...                  # 各功能页（ticket / best50 / 风险操作等）
+├── models/
+│   ├── session_model.dart   # 会话与 Cookie 的唯一持有者（ChangeNotifier 单例）
+│   └── ...
 ├── widgets/
 │   ├── cooldown_mixin.dart  # CooldownMixin：登录后冷却倒计时
 │   ├── step_progress.dart   # RiskStep + StepProgressCard
 │   ├── app_card.dart        # AppCard / SectionTitle / AutoLogoutToggle
 │   ├── app_notice.dart      # AppNotice + context.showSnack
+│   ├── home/                # 主页资料 / 统计 / 调试卡片
+│   ├── risk/
+│   │   ├── risk_list_widgets.dart  # 待提交列表与表单控件
+│   │   ├── music_risk_editors.dart # 解锁歌曲 / 收藏品编辑器
+│   │   └── risk_run_mixin.dart     # 风险执行阶段与错误上报
 │   └── best50_poster.dart   # B50 成绩图
 └── services/
     ├── api_service.dart     # Aime 登录 API 客户端
@@ -69,13 +84,35 @@ lib/
 - **QR decoding is native-only**: `services/qr_service.dart` calls the
   `dev.naominet.ichino/qr_scanner` MethodChannel, implemented by Android's `MainActivity` and
   iOS's `SceneDelegate`. Desktop has no handler, so image-based QR scanning is mobile-only.
-- **Auth flow**: `ApiService.login()` takes a QR code token (last 64 chars), builds a SHA-256 key
-  from `chipID + JST-timestamp + chimeSalt`, and POSTs JSON to the configured Aime URL. A successful
-  response has `errorID: 0` and returns `userID` + `token`.
+- **Auth flow**: `ApiService.login()` is a port of Astral's `api/Chime.py`. It normalizes the pasted
+  input (84-char `SGWCMAID…` string, or a `wq.wahlap.net/qrcode/req/….html` link) and POSTs
+  `{chipID, openGameID, key, qrCode, timestamp, titlekey}` to the hardcoded aimedb endpoint
+  `https://ai.sys-allnet.cn/wc_aime/api/get_data`. The `key` is
+  `SHA-256(完整 Keychip + timestamp + 内置签名盐)` upper-hex; `qrCode` is the 64-char payload
+  (`input[20:]`), not the whole string. The request **must not carry a Content-Type header** —
+  aimedb answers `errorID: 57` when it does — so it is sent via `http.Request` + `bodyBytes`.
+  `chipID` uses the full hyphenated Keychip (`TitleServerConfig.fullKeychipId`), while the title
+  server keeps using the 11-char short `clientId`. A successful response has `errorID: 0` and
+  returns `userID` + `token`.
 - **Title server transport**: `TitleApiService` derives the URL path from
   `MD5(apiName + salt + obfuscateParam)`, JSON → ZLib → AES-CBC encodes/decodes, and keeps the
   `JSESSIONID` cookie. `getUserPreview` and every other API go through the same `_callApi` helper.
-- **Timestamp is JST (UTC+9)** for Aime key derivation, formatted `yyMMddHHmmss`.
+- **Session and cookies have one owner**: `SessionModel` holds the latest `JSESSIONID`; pages build
+  services with `SessionModel.createTitleService(cookies: …)` instead of snapshotting the cookie
+  themselves. Any response can rotate the cookie, so `TitleApiService` writes it back through
+  `onCookiesChanged` and `SessionModel.updateCookies` notifies listeners — visited tabs then rebuild
+  with the fresh value. Directly-constructed page tests fall back to the cookie passed to the page.
+  `lastRawResponse` (the homepage debug card) is per service instance, not static; `SessionModel`
+  forwards the restored preview body through `SessionRestoreResult`.
+- **Home tabs are lazy**: the `HomeTab` enum owns order/title/icons; `HomePage` keeps a
+  `_visitedTabs` set and fills unvisited `IndexedStack` slots with `SizedBox.shrink()`, so ticket /
+  B50 / risk pages do not fire their startup requests until first opened.
+- **User-facing API errors**: call `describeApiError(e)` — `TitleApiException` contributes only its
+  message (protocol failures stay readable), anything else keeps `toString()` for debugging.
+  Use the `core/json_value.dart` helpers for loose server JSON instead of ad-hoc casts, and
+  `core/date_time_format.dart` for UTC+8 timestamps.
+- **The login timestamp is the device's local wall-clock time** (`yymmddHHmmss`), matching the
+  arcade cabinet; it is not pinned to any fixed UTC offset.
 
 ### Notable Dependencies
 

@@ -64,7 +64,7 @@ class AccountBackupService {
         final value = await read();
         sections[name] = value;
       } catch (e) {
-        failed.add('$name: $e');
+        failed.add('$name: ${describeApiError(e)}');
       }
     }
 
@@ -103,7 +103,7 @@ class AccountBackupService {
           try {
             items['$kind'] = await _api.getUserItems(userId, kind);
           } catch (e) {
-            failed.add('userItemList/$kind: $e');
+            failed.add('userItemList/$kind: ${describeApiError(e)}');
           }
         }(),
     ]);

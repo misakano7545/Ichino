@@ -1,3 +1,5 @@
+import '../core/json_value.dart';
+
 /// GetUserRatingApi 的 `userRating` 结构，移植自 Empurple 的 `UserRatingData`。
 ///
 /// 服务端已按 RA 排好 BEST 35 / BEST 15，客户端不再重排。
@@ -43,21 +45,13 @@ class UserRatingItemBean {
   MusicLevel get musicLevel => MusicLevel.fromInt(level);
 
   factory UserRatingItemBean.fromJson(Map<String, dynamic> json) {
-    int toInt(dynamic v) {
-      if (v == null) return 0;
-      if (v is int) return v;
-      if (v is num) return v.toInt();
-      if (v is String) return int.tryParse(v) ?? 0;
-      return 0;
-    }
-
     return UserRatingItemBean(
-      musicId: toInt(json['musicId']),
-      level: toInt(json['level']),
-      achievement: toInt(json['achievement']),
-      comboStatus: toInt(json['comboStatus']),
-      syncStatus: toInt(json['syncStatus']),
-      romVersion: toInt(json['romVersion']),
+      musicId: jsonInt(json['musicId']),
+      level: jsonInt(json['level']),
+      achievement: jsonInt(json['achievement']),
+      comboStatus: jsonInt(json['comboStatus']),
+      syncStatus: jsonInt(json['syncStatus']),
+      romVersion: jsonInt(json['romVersion']),
     );
   }
 }
@@ -73,28 +67,14 @@ class UserRatingBean {
     required this.newRatingList,
   });
 
-  static List<UserRatingItemBean> _parseList(dynamic raw) {
-    if (raw is! List) return const [];
-    return raw
-        .whereType<Map<String, dynamic>>()
-        .map(UserRatingItemBean.fromJson)
-        .toList();
-  }
+  static List<UserRatingItemBean> _parseList(dynamic raw) =>
+      jsonMapList(raw).map(UserRatingItemBean.fromJson).toList();
 
   factory UserRatingBean.fromJson(Map<String, dynamic> json) {
-    int toInt(dynamic v) {
-      if (v == null) return 0;
-      if (v is int) return v;
-      if (v is num) return v.toInt();
-      if (v is String) return int.tryParse(v) ?? 0;
-      return 0;
-    }
-
-    final userRating =
-        (json['userRating'] as Map<String, dynamic>?) ?? const {};
+    final userRating = jsonMap(json['userRating']);
 
     return UserRatingBean(
-      userId: toInt(json['userId']),
+      userId: jsonInt(json['userId']),
       ratingList: _parseList(userRating['ratingList']),
       newRatingList: _parseList(userRating['newRatingList']),
     );

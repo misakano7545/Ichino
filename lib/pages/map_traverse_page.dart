@@ -1,14 +1,16 @@
 
 import 'package:flutter/material.dart';
 
-import '../config/responsive.dart';
 import '../config/strings.dart';
-import '../config/title_server_config.dart';
+import '../core/json_value.dart';
+import '../models/session_model.dart';
 import '../services/title_api_service.dart';
 import '../services/user_all_payload_builder.dart';
 import '../widgets/app_card.dart';
 import '../widgets/app_notice.dart';
 import '../widgets/cooldown_mixin.dart';
+import '../widgets/risk/risk_run_mixin.dart';
+import '../widgets/risk/risk_widgets.dart';
 import '../widgets/step_progress.dart';
 
 /// 一键跑图：把选中的区域标记为已完成。
@@ -43,19 +45,13 @@ class MapTraversePage extends StatefulWidget {
 }
 
 class _MapTraversePageState extends State<MapTraversePage>
-    with CooldownMixin<MapTraversePage> {
+    with CooldownMixin<MapTraversePage>, RiskRunMixin<MapTraversePage> {
   final _mapIdController = TextEditingController();
   final List<int> _pending = [];
 
   Map<String, Map<String, dynamic>> _userAllData = const {};
   Set<int>? _serverMapIds;
   List<Map<String, dynamic>> _serverMaps = const [];
-
-  bool _loading = false;
-  bool _running = false;
-  bool _autoLogout = true;
-  RiskStep _step = RiskStep.idle;
-  String _stepMessage = '';
 
   @override
   int? get cooldownLoginDateTime => widget.loginDateTime;
@@ -87,17 +83,19 @@ class _MapTraversePageState extends State<MapTraversePage>
   void _applyServerMaps(List<Map<String, dynamic>> rows) {
     _serverMaps = rows;
     _serverMapIds = rows
-        .map((e) => (e['mapId'] as num?)?.toInt() ?? 0)
+        .map((e) => jsonInt(e['mapId']))
         .where((e) => e != 0)
         .toSet();
   }
 
   Future<void> _fetchData() async {
-    if (!TitleServerConfigHolder().isConfigured) return;
-    setState(() => _loading = true);
+    final service = SessionModel.instance.createTitleService(
+      cookies: widget.cookies,
+    );
+    if (service == null) return;
+    setRiskFetching(true);
 
     try {
-      final service = TitleApiService.fromHolder(cookies: widget.cookies)!;
       final results = await Future.wait([
         service.fetchUserAllData(widget.userId),
         service.getUserMaps(widget.userId),
@@ -106,28 +104,25 @@ class _MapTraversePageState extends State<MapTraversePage>
       setState(() {
         _userAllData = results[0] as Map<String, Map<String, dynamic>>;
         _applyServerMaps(results[1] as List<Map<String, dynamic>>);
-        _loading = false;
+        riskFetching = false;
       });
     } catch (e) {
       if (!mounted) return;
-      setState(() => _loading = false);
-      _snack('${AppStrings.loadFailed}: $e');
+      setState(() => riskFetching = false);
+      _snack('${AppStrings.loadFailed}: ${describeApiError(e)}');
     }
   }
 
   Future<void> _run() async {
-    if (!TitleServerConfigHolder().isConfigured) {
-      _snack(AppStrings.ticketNotConfigured);
-      return;
-    }
-    final loginDateTime = widget.loginDateTime;
-    final loginId = widget.loginId;
-    if (loginDateTime == null || loginId == null) {
-      _snack(AppStrings.mapNotLoggedIn);
-      return;
-    }
-    if (cooldownRemaining > 0) {
-      _snack(AppStrings.mapCooldownNotice(cooldownRemaining));
+    final guard = riskPreconditionError(
+      loginDateTime: widget.loginDateTime,
+      loginId: widget.loginId,
+      cooldownRemaining: cooldownRemaining,
+      notLoggedInMessage: AppStrings.mapNotLoggedIn,
+      cooldownNotice: AppStrings.mapCooldownNotice,
+    );
+    if (guard != null) {
+      _snack(guard);
       return;
     }
     if (_pending.isEmpty) {
@@ -135,16 +130,20 @@ class _MapTraversePageState extends State<MapTraversePage>
       return;
     }
 
-    setState(() => _running = true);
+    final loginDateTime = widget.loginDateTime!;
+    final loginId = widget.loginId!;
+    setRiskRunning(true);
 
     try {
-      final service = TitleApiService.fromHolder(cookies: widget.cookies)!;
+      final service = SessionModel.instance.createTitleService(
+        cookies: widget.cookies,
+      )!;
       final builder = UserAllPayloadBuilder(service.config);
 
       var data = _userAllData;
       var serverIds = _serverMapIds;
       if (data.isEmpty || serverIds == null) {
-        _updateStep(RiskStep.fetchData);
+        updateRiskStep(RiskStep.fetchData);
         final results = await Future.wait([
           service.fetchUserAllData(widget.userId),
           service.getUserMaps(widget.userId),
@@ -155,7 +154,7 @@ class _MapTraversePageState extends State<MapTraversePage>
         serverIds = _serverMapIds!;
       }
 
-      _updateStep(RiskStep.upload);
+      updateRiskStep(RiskStep.upload);
       final packet = builder.build(
         userId: widget.userId,
         loginId: loginId,
@@ -175,20 +174,12 @@ class _MapTraversePageState extends State<MapTraversePage>
       builder.applyMapPatch(packet, maps: maps, newFlags: flags);
 
       await service.upsertUserAll(packet, widget.userId);
-      _updateStep(RiskStep.complete, await _verify(service));
-
-      if (_autoLogout && widget.onExitToTitle != null) {
-        await Future.delayed(const Duration(seconds: 2));
-        if (!mounted) return;
-        _updateStep(RiskStep.logout, AppStrings.exitingToTitle);
-        await widget.onExitToTitle!();
-      }
-    } on TitleApiException catch (e) {
-      _updateStep(RiskStep.failed, e.message);
+      updateRiskStep(RiskStep.complete, await _verify(service));
+      await autoLogoutAndExit(widget.onExitToTitle);
     } catch (e) {
-      _updateStep(RiskStep.failed, '$e');
+      reportRiskError(e);
     } finally {
-      if (mounted) setState(() => _running = false);
+      setRiskRunning(false);
     }
   }
 
@@ -199,7 +190,7 @@ class _MapTraversePageState extends State<MapTraversePage>
     try {
       rows = await service.getUserMaps(widget.userId);
     } catch (e) {
-      return AppStrings.mapVerifyFailed('$e');
+      return AppStrings.mapVerifyFailed(describeApiError(e));
     }
     if (mounted) setState(() => _applyServerMaps(rows));
 
@@ -211,91 +202,83 @@ class _MapTraversePageState extends State<MapTraversePage>
     return AppStrings.mapVerified(requested.length);
   }
 
-  void _updateStep(RiskStep step, [String? message]) {
-    if (!mounted) return;
-    setState(() {
-      _step = step;
-      _stepMessage = message ?? '';
-    });
-  }
-
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
 
     return Scaffold(
       appBar: AppBar(title: const Text(AppStrings.mapFeatureTitle)),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(16),
-        child: responsiveBody(
-          context,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              if (!isLoggedIn)
-                const AppNotice(AppStrings.mapNotLoggedIn, error: true),
-              if (isLoggedIn && cooldownRemaining > 0)
-                AppNotice(AppStrings.mapCooldownNotice(cooldownRemaining)),
-              AppCard(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const SectionTitle(
-                      icon: Icons.map_outlined,
-                      title: AppStrings.mapFeatureTitle,
-                    ),
-                    const SizedBox(height: 12),
-                    Text(
-                      AppStrings.mapFeatureDesc,
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: theme.colorScheme.onSurfaceVariant,
-                        height: 1.5,
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                    Text(
-                      AppStrings.mapCollectiblesNotice,
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: theme.colorScheme.error,
-                        height: 1.5,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 12),
-              _inputCard(theme),
-              const SizedBox(height: 12),
-              _fetchCard(theme),
-              const SizedBox(height: 12),
-              AutoLogoutToggle(
-                value: _autoLogout,
-                enabled: widget.onExitToTitle != null && !_running,
-                onChanged: (v) => setState(() => _autoLogout = v),
-              ),
-              const SizedBox(height: 12),
-              _runButton(theme),
-              if (_step != RiskStep.idle) ...[
-                const SizedBox(height: 16),
-                StepProgressCard(
-                  step: _step,
-                  message: _stepMessage,
-                  steps: [
-                    (RiskStep.fetchData, AppStrings.mapStepFetch),
-                    (RiskStep.upload, AppStrings.mapStepUpload),
-                    if (_autoLogout) (RiskStep.logout, AppStrings.stepLogout),
-                  ],
-                ),
-              ],
-            ],
+      body: RiskPageBody(
+        children: [
+          RiskStatusNotices(
+            isLoggedIn: isLoggedIn,
+            cooldownRemaining: cooldownRemaining,
+            notLoggedInText: AppStrings.mapNotLoggedIn,
+            cooldownText: AppStrings.mapCooldownNotice,
           ),
-        ),
+          RiskFeatureCard(
+            icon: Icons.map_outlined,
+            title: AppStrings.mapFeatureTitle,
+            description: AppStrings.mapFeatureDesc,
+            child: Padding(
+              padding: const EdgeInsets.only(top: 10),
+              child: Text(
+                AppStrings.mapCollectiblesNotice,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.error,
+                  height: 1.5,
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          _inputCard(theme),
+          const SizedBox(height: 12),
+          RiskFetchCard(
+            hasData: _serverMapIds != null,
+            statusText: _serverMapIds != null
+                ? '${AppStrings.mapFetched} (${_serverMaps.length})'
+                : AppStrings.mapNoData,
+            loadingLabel: AppStrings.travelPartnerFetching,
+            actionLabel: AppStrings.mapFetchData,
+            loading: riskFetching,
+            enabled: !riskRunning,
+            onFetch: _fetchData,
+          ),
+          const SizedBox(height: 12),
+          AutoLogoutToggle(
+            value: riskAutoLogout,
+            enabled: widget.onExitToTitle != null && !riskRunning,
+            onChanged: setRiskAutoLogout,
+          ),
+          const SizedBox(height: 12),
+          RiskRunButton(
+            running: riskRunning,
+            enabled: isLoggedIn,
+            icon: Icons.flag_outlined,
+            label: AppStrings.mapRun,
+            runningLabel: AppStrings.mapRunning,
+            onPressed: _run,
+          ),
+          if (riskStep != RiskStep.idle) ...[
+            const SizedBox(height: 16),
+            StepProgressCard(
+              step: riskStep,
+              message: riskStepMessage,
+              steps: [
+                (RiskStep.fetchData, AppStrings.mapStepFetch),
+                (RiskStep.upload, AppStrings.mapStepUpload),
+                if (riskAutoLogout) (RiskStep.logout, AppStrings.stepLogout),
+              ],
+            ),
+          ],
+        ],
       ),
     );
   }
 
   Widget _inputCard(ThemeData theme) {
-    final enabled = !_running;
+    final enabled = !riskRunning;
     return AppCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -338,84 +321,6 @@ class _MapTraversePageState extends State<MapTraversePage>
             ),
           ),
         ],
-      ),
-    );
-  }
-
-  Widget _fetchCard(ThemeData theme) {
-    final hasData = _serverMapIds != null;
-    return AppCard(
-      child: Row(
-        children: [
-          Icon(
-            hasData ? Icons.check_circle : Icons.download,
-            size: 18,
-            color: hasData ? Colors.green : theme.colorScheme.primary,
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              hasData
-                  ? '${AppStrings.mapFetched} (${_serverMaps.length})'
-                  : AppStrings.mapNoData,
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: hasData
-                    ? Colors.green
-                    : theme.colorScheme.onSurfaceVariant,
-              ),
-            ),
-          ),
-          SizedBox(
-            height: 32,
-            child: OutlinedButton.icon(
-              onPressed: _loading || _running ? null : _fetchData,
-              icon: _loading
-                  ? const SizedBox(
-                      width: 14,
-                      height: 14,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.refresh, size: 16),
-              label: Text(
-                _loading
-                    ? AppStrings.travelPartnerFetching
-                    : AppStrings.mapFetchData,
-                style: theme.textTheme.labelSmall,
-              ),
-              style: OutlinedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(horizontal: 12),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(8),
-                ),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _runButton(ThemeData theme) {
-    return SizedBox(
-      width: double.infinity,
-      child: FilledButton.icon(
-        onPressed: _running || !isLoggedIn ? null : _run,
-        icon: _running
-            ? const SizedBox(
-                width: 20,
-                height: 20,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              )
-            : const Icon(Icons.flag_outlined, size: 20),
-        label: Text(
-          _running ? AppStrings.mapRunning : AppStrings.mapRun,
-        ),
-        style: FilledButton.styleFrom(
-          padding: const EdgeInsets.symmetric(vertical: 14),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12),
-          ),
-        ),
       ),
     );
   }

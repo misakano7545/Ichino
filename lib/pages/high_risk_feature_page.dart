@@ -1,10 +1,9 @@
 import 'package:flutter/material.dart';
 
-import '../config/responsive.dart';
 import '../config/strings.dart';
 import '../config/title_server_config.dart';
-import '../widgets/app_notice.dart';
 import '../widgets/cooldown_mixin.dart';
+import '../widgets/risk/risk_widgets.dart';
 import 'collectibles_page.dart';
 import 'kaleidx_scope_page.dart';
 import 'map_traverse_page.dart';
@@ -48,10 +47,19 @@ class _HighRiskFeaturePageState extends State<HighRiskFeaturePage>
   @override
   int? get cooldownLoginDateTime => widget.loginDateTime;
 
-  void _openUnlockMusic() {
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => UnlockMusicPage(
+  void _push(Widget page) {
+    Navigator.of(context).push(MaterialPageRoute(builder: (_) => page));
+  }
+
+  /// 中转页只是导航入口，七张卡片的差异只有图标、文案和目标页，
+  /// 用一张表驱动，避免七份几乎相同的 `Navigator.push`。
+  List<({IconData icon, String title, String desc, Widget page})> get _entries {
+    return [
+      (
+        icon: Icons.lock_open,
+        title: AppStrings.unlockFeatureTitle,
+        desc: AppStrings.unlockFeatureDesc,
+        page: UnlockMusicPage(
           userId: widget.userId,
           cookies: widget.cookies,
           loginDateTime: widget.loginDateTime,
@@ -60,13 +68,11 @@ class _HighRiskFeaturePageState extends State<HighRiskFeaturePage>
           onExitToTitle: widget.onExitToTitle,
         ),
       ),
-    );
-  }
-
-  void _openCollectibles() {
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => CollectiblesPage(
+      (
+        icon: Icons.card_giftcard,
+        title: AppStrings.collectiblesFeatureTitle,
+        desc: AppStrings.collectiblesFeatureDesc,
+        page: CollectiblesPage(
           userId: widget.userId,
           cookies: widget.cookies,
           loginDateTime: widget.loginDateTime,
@@ -75,13 +81,11 @@ class _HighRiskFeaturePageState extends State<HighRiskFeaturePage>
           onExitToTitle: widget.onExitToTitle,
         ),
       ),
-    );
-  }
-
-  void _openTravelPartner() {
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => TravelPartnerPage(
+      (
+        icon: Icons.workspace_premium_outlined,
+        title: AppStrings.travelPartnerFeatureTitle,
+        desc: AppStrings.travelPartnerFeatureDesc,
+        page: TravelPartnerPage(
           userId: widget.userId,
           cookies: widget.cookies,
           loginDateTime: widget.loginDateTime,
@@ -89,42 +93,37 @@ class _HighRiskFeaturePageState extends State<HighRiskFeaturePage>
           onExitToTitle: widget.onExitToTitle,
         ),
       ),
-    );
-  }
-
-  void _openNumberPatch(NumberPatchMode mode) {
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => NumberPatchPage(
+      (
+        icon: Icons.speed,
+        title: AppStrings.ratingFeatureTitle,
+        desc: AppStrings.ratingFeatureDesc,
+        page: NumberPatchPage(
           userId: widget.userId,
           cookies: widget.cookies,
           loginDateTime: widget.loginDateTime,
           loginId: widget.loginId,
           onExitToTitle: widget.onExitToTitle,
-          mode: mode,
+          mode: NumberPatchMode.rating,
         ),
       ),
-    );
-  }
-
-  void _openMapTraverse() {
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => MapTraversePage(
+      (
+        icon: Icons.commute,
+        title: AppStrings.maiMileFeatureTitle,
+        desc: AppStrings.maiMileFeatureDesc,
+        page: NumberPatchPage(
           userId: widget.userId,
           cookies: widget.cookies,
           loginDateTime: widget.loginDateTime,
           loginId: widget.loginId,
           onExitToTitle: widget.onExitToTitle,
+          mode: NumberPatchMode.maiMile,
         ),
       ),
-    );
-  }
-
-  void _openKaleidxScope() {
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => KaleidxScopePage(
+      (
+        icon: Icons.map_outlined,
+        title: AppStrings.mapFeatureTitle,
+        desc: AppStrings.mapFeatureDesc,
+        page: MapTraversePage(
           userId: widget.userId,
           cookies: widget.cookies,
           loginDateTime: widget.loginDateTime,
@@ -132,166 +131,81 @@ class _HighRiskFeaturePageState extends State<HighRiskFeaturePage>
           onExitToTitle: widget.onExitToTitle,
         ),
       ),
-    );
+      (
+        icon: Icons.science_outlined,
+        title: AppStrings.kaleidxFeatureTitle,
+        desc: AppStrings.kaleidxFeatureDesc,
+        page: KaleidxScopePage(
+          userId: widget.userId,
+          cookies: widget.cookies,
+          loginDateTime: widget.loginDateTime,
+          loginId: widget.loginId,
+          onExitToTitle: widget.onExitToTitle,
+        ),
+      ),
+    ];
   }
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-
     if (!TitleServerConfigHolder().isConfigured) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(32),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(Icons.settings_ethernet,
-                  size: 48, color: theme.colorScheme.primary),
-              const SizedBox(height: 16),
-              Text(AppStrings.ticketNotConfigured,
-                  style: theme.textTheme.titleMedium),
-            ],
-          ),
-        ),
+      return const RiskConfigMissingView(
+        message: AppStrings.ticketNotConfigured,
       );
     }
 
-    return SingleChildScrollView(
-      padding: const EdgeInsets.all(16),
-      child: responsiveBody(
-        context,
-        child: Column(
-          children: [
-            if (!isLoggedIn)
-              AppNotice(
-                AppStrings.musicRiskHubNotLoggedIn,
-                error: true,
-                icon: Icons.warning_amber_rounded,
-              ),
-            if (isLoggedIn && cooldownRemaining > 0)
-              AppNotice(
-                AppStrings.musicRiskHubCooldownNotice(cooldownRemaining),
-                icon: Icons.timer_outlined,
-              ),
-            _buildDescCard(theme),
-            const SizedBox(height: 12),
-            _buildNavCard(
-              theme,
-              icon: Icons.lock_open,
-              title: AppStrings.unlockFeatureTitle,
-              desc: AppStrings.unlockFeatureDesc,
-              onTap: _openUnlockMusic,
-            ),
-            const SizedBox(height: 12),
-            _buildNavCard(
-              theme,
-              icon: Icons.card_giftcard,
-              title: AppStrings.collectiblesFeatureTitle,
-              desc: AppStrings.collectiblesFeatureDesc,
-              onTap: _openCollectibles,
-            ),
-            const SizedBox(height: 12),
-            _buildNavCard(
-              theme,
-              icon: Icons.workspace_premium_outlined,
-              title: AppStrings.travelPartnerFeatureTitle,
-              desc: AppStrings.travelPartnerFeatureDesc,
-              onTap: _openTravelPartner,
-            ),
-            const SizedBox(height: 12),
-            _buildNavCard(
-              theme,
-              icon: Icons.speed,
-              title: AppStrings.ratingFeatureTitle,
-              desc: AppStrings.ratingFeatureDesc,
-              onTap: () => _openNumberPatch(NumberPatchMode.rating),
-            ),
-            const SizedBox(height: 12),
-            _buildNavCard(
-              theme,
-              icon: Icons.commute,
-              title: AppStrings.maiMileFeatureTitle,
-              desc: AppStrings.maiMileFeatureDesc,
-              onTap: () => _openNumberPatch(NumberPatchMode.maiMile),
-            ),
-            const SizedBox(height: 12),
-            _buildNavCard(
-              theme,
-              icon: Icons.map_outlined,
-              title: AppStrings.mapFeatureTitle,
-              desc: AppStrings.mapFeatureDesc,
-              onTap: _openMapTraverse,
-            ),
-            const SizedBox(height: 12),
-            _buildNavCard(
-              theme,
-              icon: Icons.science_outlined,
-              title: AppStrings.kaleidxFeatureTitle,
-              desc: AppStrings.kaleidxFeatureDesc,
-              onTap: _openKaleidxScope,
-            ),
-          ],
+    final entries = _entries;
+    return RiskPageBody(
+      children: [
+        RiskStatusNotices(
+          isLoggedIn: isLoggedIn,
+          cooldownRemaining: cooldownRemaining,
+          notLoggedInText: AppStrings.musicRiskHubNotLoggedIn,
+          cooldownText: AppStrings.musicRiskHubCooldownNotice,
         ),
-      ),
+        const RiskFeatureCard(
+          icon: Icons.warning_amber_rounded,
+          title: AppStrings.musicRiskHubTitle,
+          description: AppStrings.musicRiskHubDesc,
+          danger: true,
+        ),
+        for (var i = 0; i < entries.length; i++) ...[
+          const SizedBox(height: 12),
+          _NavCard(
+            icon: entries[i].icon,
+            title: entries[i].title,
+            desc: entries[i].desc,
+            onTap: () => _push(entries[i].page),
+          ),
+        ],
+      ],
     );
   }
+}
 
-  Widget _buildDescCard(ThemeData theme) {
+class _NavCard extends StatelessWidget {
+  final IconData icon;
+  final String title;
+  final String desc;
+  final VoidCallback onTap;
+
+  const _NavCard({
+    required this.icon,
+    required this.title,
+    required this.desc,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     return Card(
       elevation: 0,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(16),
         side: BorderSide(
-          color: theme.colorScheme.error.withValues(alpha: 0.4),
+          color: theme.colorScheme.outline.withValues(alpha: 0.3),
         ),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Icon(Icons.warning_amber_rounded,
-                    size: 18, color: theme.colorScheme.error),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    AppStrings.musicRiskHubTitle,
-                    style: theme.textTheme.labelLarge?.copyWith(
-                      color: theme.colorScheme.error,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 12),
-            Text(
-              AppStrings.musicRiskHubDesc,
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: theme.colorScheme.onSurfaceVariant,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildNavCard(
-    ThemeData theme, {
-    required IconData icon,
-    required String title,
-    required String desc,
-    required VoidCallback onTap,
-  }) {
-    return Card(
-      elevation: 0,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(16),
-        side: BorderSide(color: theme.colorScheme.outline.withValues(alpha: 0.3)),
       ),
       child: InkWell(
         borderRadius: BorderRadius.circular(16),

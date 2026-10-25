@@ -16,7 +16,7 @@ Android / iOS / Windows / macOS / Linux。
 | 票据 | 功能票查询与使用 |
 | B50 | Best 50 成绩图，可导出 PNG（移植自 Empurple 的 `Best50ImageRenderer`） |
 | 风险 | 歌曲解锁、收藏品获取、旅行伙伴发放与编组（含等级）、修改总 Rating、添加舞里程、一键跑图、万花筒专区 |
-| 设置 | Title Server / Auth Server / 机器参数，支持配置导入导出 |
+| 设置 | Title Server / 机器参数 / Keychip，支持配置导入导出 |
 | 连接信息（实验性） | 主页导出 uid + JSESSIONID + token 的 Base64 快照，登录页粘贴即可恢复会话；内容未加密，请勿外传 |
 | 账号备份 | 主页只读地把服务器上的用户数据汇成一串 JSON（道具、舞里程、游玩统计、旅行伙伴、区域与万花筒进度、Rating/成绩）。全程只发 `GetUser*Api`，不写任何数据；单段读失败不整体作废，失败段列在结果里 |
 
@@ -45,10 +45,16 @@ flutter build ios --release --no-codesign   # iOS（无证书时只验证可编�
 lib/
 ├── main.dart            # 入口（MyApp + MaterialApp）
 ├── config/              # 字符串、响应式布局、Title Server 配置
-├── models/              # API 数据模型（UserData / UserPreview / UserRating / UserCharacter / UserKaleidxScope / Session）
-├── pages/               # 登录页与各功能页面
+├── core/                # 宽松 JSON 解析、UTC+8 时间格式化
+├── models/              # API 数据模型与 SessionModel（会话 / Cookie 的唯一持有者）
+├── pages/
+│   ├── home/            # 主页页签枚举与首页视图（HomeTab / HomeTabView）
+│   └── ...              # 登录页与各功能页面
 ├── services/            # 传输层、payload 组装、乐曲元数据、导出、RA 计算、调试日志
-└── widgets/             # 可复用视觉组件（B50 海报、卡片/提示、冷却 mixin、阶段进度卡）
+└── widgets/
+    ├── home/            # 主页头像、资料、统计、调试卡片
+    ├── risk/            # 风险页共享脚手架、列表控件与编辑器
+    └── ...              # 可复用视觉组件（B50 海报、卡片/提示、冷却 mixin、阶段进度卡）
 tools/                   # 离线开发工具（不参与构建产物）
 data/id_mapping/         # 由 tools/gen_id_mapping.dart 从机台数据包抽出的 ID 映射表
 ```
@@ -60,12 +66,25 @@ data/id_mapping/         # 由 tools/gen_id_mapping.dart 从机台数据包抽�
 
 - `widgets/cooldown_mixin.dart` —`CooldownMixin`：登录后冷却倒计时（`Timer.periodic`）。
 - `widgets/step_progress.dart` —`RiskStep` + `StepProgressCard`：执行阶段枚举与进度卡。
+- `widgets/risk/risk_list_widgets.dart` —`RiskPendingList` / `RiskPendingRow` /
+  `RiskDropdownField` / `RiskNumberField` / `RiskAddButton`：待提交列表与表单控件。
+- `widgets/risk/music_risk_editors.dart` — 解锁歌曲与收藏品的输入编辑器
+  （`PendingItem` / `PendingMusic`）。
 - `widgets/app_card.dart` —`AppCard` / `SectionTitle` / `AutoLogoutToggle`。
 - `widgets/app_notice.dart` —`AppNotice`（未登录/冷却/错误横幅）与 `context.showSnack`。
+- `core/json_value.dart` —`jsonInt` / `jsonDouble` / `jsonBool` / `jsonString` /
+  `jsonMap` / `jsonMapList`：服务器字段类型不稳定，统一宽松转换。
+- `core/date_time_format.dart` — UTC+8 时间戳与 `yyyy-MM-dd HH:mm:ss.f` 格式化。
+- `models/session_model.dart` —`SessionModel.createTitleService()` 统一构建会话服务；
+  Cookie 在任意响应里轮换时经 `onCookiesChanged` 回写，页面不再拿旧快照。
 - `services/title_api_service.dart` —`TitleApiService.fromHolder()` 统一构建会话，`config` getter
-  供 payload builder 复用。
+  供 payload builder 复用；`describeApiError()` 统一面向用户的错误文本。
 - `services/user_all_payload_builder.dart` — 占位 `musicData`（`placeholderMusicData`）。
 - `services/api_log.dart` —`ApiLog`：传输层日志，仅 debug 输出，release 下不落 token/cookie。
+
+主页的六个页签由 `HomeTab` 枚举驱动，`IndexedStack` 只构建访问过的页签，
+票据 / B50 / 风险 hub 不会再在启动时各自发一轮请求。 `TitleApiService.lastRawResponse`
+是实例状态，`SessionModel` 把预览原文透传给主页调试卡，不会跨请求串数据。
 
 平台差异只体现在原生侧：QR 解码由 Android 的 `MainActivity` 与 iOS 的
 `SceneDelegate` 通过 `dev.naominet.ichino/qr_scanner` 这个 MethodChannel 提供，
@@ -73,8 +92,15 @@ data/id_mapping/         # 由 tools/gen_id_mapping.dart 从机台数据包抽�
 
 ## 关键实现说明
 
+- **扫码登录**：`ApiService` 对齐 Astral 的 `api/Chime.py` —— 端点与签名盐写死在代码里
+  （`https://ai.sys-allnet.cn/wc_aime/api/get_data`），签名是
+  `SHA-256(完整 Keychip + 本机本地时间 + 签名盐)`，请求体带 `titlekey: SDGB`，
+  `qrCode` 只发 84 串的第 21 位起的 64 位载荷；请求头**不能带 Content-Type**，
+  带了 aimedb 直接回 `errorID=57`。输入既可以是 84 位二维码串，也可以是
+  `wq.wahlap.net/qrcode/req/….html` 二维码链接；Keychip 设置里填 11 位短值也能用，
+  会按 placeId 补成完整形式（扫码登录用完整形式，游戏服务器才用短值）。
 - **传输层**：`TitleApiService` 负责 `MD5(apiName + salt + obfuscateParam)` 生成 URL 路径、
-  JSON → ZLib → AES-CBC 编解码、`Set-Cookie` 会话维持。时间戳用 JST（UTC+9）。
+  JSON → ZLib → AES-CBC 编解码、`Set-Cookie` 会话维持。
 - **B50 成绩图**：底图 `assets/b50/base.png`（1762×1850）之上按固定像素坐标叠加头像、
   昵称、50 张卡片与页脚；卡片 300×100、每行 5 张，BEST35 从 y=350 起、BEST15 固定从
   y=1250 起。RA 与评级由 `RatingCalculator` 计算，曲名与定数取自 diving-fish 的
@@ -170,6 +196,9 @@ data/id_mapping/         # 由 tools/gen_id_mapping.dart 从机台数据包抽�
    `dependency_overrides`）。2.3.x 起它依赖 `jni`，而 `jni` 把 `windows`/`linux`
    也声明成 `ffiPlugin`，只要它出现在依赖树里，桌面构建就会去链接 `jvm.lib` 并失败。
    `share_plus` 间接依赖 `path_provider`，所以不能靠去掉直接依赖解决。
+   同理，`shared_preferences_android` 2.5.x 也会引入 `jni`；`pubspec.lock` 目前锁在
+   2.4.23。跑完 `flutter pub get` 后如果 lock 被悄悄升到 2.5.x，请恢复该 lock 项，
+   否则 `jni` 会重新出现在 `generated_plugins.cmake` 的 FFI 列表里。
 2. **命令行构建请显式指定 JDK**。Android Studio 常驻的 Gradle daemon 用它自带的 JBR，
    而 JBR 不含 `jlink.exe`，会导致
    `:flutter_plugin_android_lifecycle:compileReleaseJavaWithJavac` 失败。
