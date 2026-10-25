@@ -27,8 +27,6 @@ class _SettingsPageState extends State<SettingsPage> {
   final _regionNameController = TextEditingController();
   final _placeNameController = TextEditingController();
   final _keychipIdController = TextEditingController();
-  final _aimeUrlController = TextEditingController();
-  final _aimeSaltController = TextEditingController();
 
   @override
   void initState() {
@@ -50,8 +48,6 @@ class _SettingsPageState extends State<SettingsPage> {
       _regionNameController.text = config.regionName;
       _placeNameController.text = config.placeName;
       _keychipIdController.text = config.keychipId;
-      _aimeUrlController.text = config.aimeUrl;
-      _aimeSaltController.text = config.aimeSalt;
     }
   }
 
@@ -68,8 +64,6 @@ class _SettingsPageState extends State<SettingsPage> {
     _regionNameController.dispose();
     _placeNameController.dispose();
     _keychipIdController.dispose();
-    _aimeUrlController.dispose();
-    _aimeSaltController.dispose();
     super.dispose();
   }
 
@@ -88,11 +82,19 @@ class _SettingsPageState extends State<SettingsPage> {
       regionName: _regionNameController.text.trim(),
       placeName: _placeNameController.text.trim(),
       keychipId: _keychipIdController.text.trim(),
-      aimeUrl: _aimeUrlController.text.trim(),
-      aimeSalt: _aimeSaltController.text.trim(),
     ));
 
-    if (mounted) Navigator.of(context).pop();
+    if (!mounted) return;
+    final navigator = Navigator.of(context);
+    // 作为主页页签嵌入时（showAppBar: false）没有可弹出的路由，
+    // 直接 pop 会把根路由弹掉，整个导航栈变空只剩黑屏。
+    if (navigator.canPop()) {
+      navigator.pop();
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text(AppStrings.configSaved)),
+      );
+    }
   }
 
   @override
@@ -139,11 +141,11 @@ class _SettingsPageState extends State<SettingsPage> {
                 ]),
                 const SizedBox(height: 24),
                 _buildSection(theme, AppStrings.authServerSettings, [
-                  _buildField(controller: _keychipIdController, label: AppStrings.labelKeychipId),
-                  const SizedBox(height: 14),
-                  _buildField(controller: _aimeUrlController, label: AppStrings.labelAimeUrl),
-                  const SizedBox(height: 14),
-                  _buildField(controller: _aimeSaltController, label: AppStrings.labelAimeSalt),
+                  _buildField(
+                    controller: _keychipIdController,
+                    label: AppStrings.labelKeychipId,
+                    help: AppStrings.helpKeychipId,
+                  ),
                 ]),
                 const SizedBox(height: 32),
                 FilledButton.icon(
@@ -216,11 +218,14 @@ class _SettingsPageState extends State<SettingsPage> {
   Widget _buildField({
     required TextEditingController controller,
     required String label,
+    String? help,
   }) {
     return TextFormField(
       controller: controller,
       decoration: InputDecoration(
         labelText: label,
+        helperText: help,
+        helperStyle: const TextStyle(fontSize: 12),
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(10),
         ),

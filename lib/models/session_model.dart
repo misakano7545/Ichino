@@ -17,6 +17,9 @@ class SessionRestoreResult {
   final UserDataBean? userData;
   final UserPreviewDataBean? preview;
 
+  /// 恢复过程中 GetUserPreviewApi 的响应原文，供主页调试卡展示。
+  final String? rawPreviewResponse;
+
   /// 服务器认为这次会话仍在登录中（`preview.isLogin`），或刚用令牌登录成功。
   /// 只有为 `true` 时票据与风险页才开放写入，并且照常吃 60 秒登录后冷却。
   final bool loggedIn;
@@ -25,6 +28,7 @@ class SessionRestoreResult {
     required this.reusedCookie,
     this.userData,
     this.preview,
+    this.rawPreviewResponse,
     this.loggedIn = false,
   });
 }
@@ -44,11 +48,22 @@ class SessionModel extends ChangeNotifier {
   UserLoginResult? get gameLogin => _gameLogin;
   String? get cookies => _cookies;
 
-  static String extractQRCode(String qrCodeToken) =>
-      ApiService.extractQRCode(qrCodeToken);
+  /// 构造会回写 Cookie 的服务。
+  ///
+  /// 生产环境优先用会话里最新的 JSESSIONID：Title Server 可能在任意响应里
+  /// 轮换 Cookie，页面若一直拿着进入时的快照，后续请求就会带着旧值。
+  /// 直接构造页面的测试没有会话，才退回调用方传入的 [cookies]。
+  TitleApiService? createTitleService({String? cookies}) {
+    return TitleApiService.fromHolder(
+      cookies: _cookies ?? cookies,
+      onCookiesChanged: updateCookies,
+    );
+  }
 
-  Future<LoginResult> loginWithQr(String qrCodeToken) async {
-    final result = await _apiService.login(qrCodeToken);
+  /// [qrInput] 可以是 84 位二维码串，也可以是主页导出的二维码链接；
+  /// 格式不合预期时 [ApiService.login] 抛 [FormatException]。
+  Future<LoginResult> loginWithQr(String qrInput) async {
+    final result = await _apiService.login(qrInput);
     if (result.success) {
       _loginResult = result;
       notifyListeners();
@@ -79,7 +94,11 @@ class SessionModel extends ChangeNotifier {
     final config = TitleServerConfigHolder().config;
     if (config == null) return;
 
-    final service = TitleApiService(config, cookies: cookies ?? _cookies);
+    final service = TitleApiService(
+      config,
+      cookies: cookies ?? _cookies,
+      onCookiesChanged: updateCookies,
+    );
     try {
       await service.userLogout(
         userId: userId,
@@ -136,7 +155,10 @@ class SessionModel extends ChangeNotifier {
     SessionShare share,
     String cookie,
   ) async {
-    final service = TitleApiService.fromHolder(cookies: cookie);
+    final service = TitleApiService.fromHolder(
+      cookies: cookie,
+      onCookiesChanged: updateCookies,
+    );
     if (service == null) return null;
 
     try {
@@ -159,6 +181,7 @@ class SessionModel extends ChangeNotifier {
         }
       }
       updateCookies(service.cookies);
+      final rawPreviewResponse = service.lastRawResponse;
 
       // 服务器说这次会话还挂在机上，就按已登录处理：loginDateTime 取当下，
       // 风险页与票据照常吃「登录后 60 秒冷却」，不用重新 UserLoginApi。
@@ -177,6 +200,7 @@ class SessionModel extends ChangeNotifier {
         reusedCookie: true,
         userData: userData,
         preview: preview,
+        rawPreviewResponse: rawPreviewResponse,
         loggedIn: _gameLogin != null,
       );
     } on TitleApiException {
@@ -185,9 +209,9 @@ class SessionModel extends ChangeNotifier {
   }
 
   void updateCookies(String? cookies) {
-    if (cookies != null && cookies.isNotEmpty) {
-      _cookies = cookies;
-    }
+    if (cookies == null || cookies.isEmpty || cookies == _cookies) return;
+    _cookies = cookies;
+    notifyListeners();
   }
 
   void reset() {

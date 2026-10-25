@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
+import '../core/json_value.dart';
 import 'music_data_cache.dart';
 
 class MusicInfo {
@@ -62,32 +63,18 @@ class MusicDataService {
     if (decoded is! List) return;
     _byId.clear();
     for (final item in decoded.whereType<Map<String, dynamic>>()) {
-      final id = _toInt(item['id']);
+      final id = jsonInt(item['id']);
       if (id == 0) continue;
       final ds = item['ds'];
       _byId[id] = MusicInfo(
-        title: item['title']?.toString() ?? 'Unknown',
+        title: jsonString(item['title'], fallback: 'Unknown'),
         dsByLevel: ds is List
             ? {
                 for (var level = 0; level < ds.length; level++)
-                  level: _toDouble(ds[level]),
+                  level: jsonDouble(ds[level]),
               }
             : const {},
       );
     }
-  }
-
-  static int _toInt(dynamic v) {
-    if (v is int) return v;
-    if (v is num) return v.toInt();
-    if (v is String) return int.tryParse(v) ?? 0;
-    return 0;
-  }
-
-  static double _toDouble(dynamic v) {
-    if (v is double) return v;
-    if (v is int) return v.toDouble();
-    if (v is String) return double.tryParse(v) ?? 0.0;
-    return 0.0;
   }
 }

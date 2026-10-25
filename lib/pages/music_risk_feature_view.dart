@@ -1,13 +1,17 @@
 import 'package:flutter/material.dart';
 
-import '../config/responsive.dart';
 import '../config/strings.dart';
 import '../config/title_server_config.dart';
+import '../models/session_model.dart';
 import '../services/title_api_service.dart';
 import '../services/user_all_payload_builder.dart';
 import '../widgets/app_card.dart';
 import '../widgets/app_notice.dart';
 import '../widgets/cooldown_mixin.dart';
+import '../widgets/risk/music_risk_editors.dart';
+import '../widgets/risk/risk_list_widgets.dart';
+import '../widgets/risk/risk_run_mixin.dart';
+import '../widgets/risk/risk_widgets.dart';
 import '../widgets/step_progress.dart';
 
 /// Dart port of `eaquira/action/UnlockMusic.py`:
@@ -23,39 +27,6 @@ enum MusicRiskFeatureMode {
 
   /// 收藏品获取 (itemKind 1/2/3/10/11/12)
   collectibles,
-}
-
-/// 一行待提交的收藏品道具（对应 wire 上的 UserItem）。
-class _PendingItem {
-  final int kind;
-  final int id;
-
-  const _PendingItem(this.kind, this.id);
-}
-
-/// 一行待提交的歌曲解锁，展开成 itemKind 5/6/7 的若干行。
-class _PendingMusic {
-  final int musicId;
-  final bool base;
-  final bool master;
-  final bool remaster;
-
-  const _PendingMusic(this.musicId, this.base, this.master, this.remaster);
-
-  bool get hasAnyOption => base || master || remaster;
-
-  /// 难度由 itemKind 表达，不写在 musicDetail 上。
-  List<int> get itemKinds => [
-    if (base) 5,
-    if (master) 6,
-    if (remaster) 7,
-  ];
-
-  String get optionLabel => [
-    if (base) '歌曲',
-    if (master) 'Master',
-    if (remaster) 'Re:Master',
-  ].join('/');
 }
 
 class MusicRiskFeatureView extends StatefulWidget {
@@ -96,106 +67,42 @@ class MusicRiskFeatureView extends StatefulWidget {
 }
 
 class _MusicRiskFeatureViewState extends State<MusicRiskFeatureView>
-    with CooldownMixin<MusicRiskFeatureView> {
-  // ── 解锁选项 (UnlockMusic) ──
-  final _unlockMusicIdController = TextEditingController();
-  bool _unlockMusic = false;
-  bool _unlockMaster = false;
-  bool _unlockRemaster = false;
-
-  // ── 收藏品选项 (Collectibles) ──
-  final _itemIdController = TextEditingController();
-  int _itemKind = 3;
-
+    with CooldownMixin<MusicRiskFeatureView>, RiskRunMixin<MusicRiskFeatureView> {
   // ── 待提交列表：userItemList 可以一次带多行 ──
   // 真客户端的 ExportUserItems() 就是把 Plate/Title/Icon/Partner/Frame/Ticket 与
   // MusicUnlock/Master/Remaster 各列表拼成多行 UserItem，BuildListData 再只发增量、
   // isNewItemList 一行一个字符。所以多行同类/异类混发是客户端自己的做法。
-  final List<_PendingItem> _pendingItems = [];
-  final List<_PendingMusic> _pendingMusics = [];
+  final List<PendingItem> _pendingItems = [];
+  final List<PendingMusic> _pendingMusics = [];
 
-  // ── 运行状态 ──
   Map<String, Map<String, dynamic>>? _userAllData;
-  bool _fetching = false;
   String? _fetchError;
-  bool _running = false;
-  bool _autoLogout = true;
-  RiskStep _step = RiskStep.idle;
-  String _stepMessage = '';
-  String? _error;
 
   bool get _isUnlock => widget.mode == MusicRiskFeatureMode.unlockMusic;
-
-  /// ConstParameter.DxScoreBaseID=10000 / StrongScoreBaseID=20000
-  /// （`MAI2System/ConstParameter.cs:168,171`）。这段里的歌 Master 需要
-  /// 显式 itemKind 6，不像 id < 10000 那样在 IsUnlockMaster 里直接放过。
-  bool _isDeluxeRange(_PendingMusic music) =>
-      music.musicId >= 10000 && music.musicId < 20000;
 
   @override
   int? get cooldownLoginDateTime => widget.loginDateTime;
 
-  @override
-  void dispose() {
-    _unlockMusicIdController.dispose();
-    _itemIdController.dispose();
-    super.dispose();
-  }
-
-  void _updateStep(RiskStep step, [String? message]) {
-    if (!mounted) return;
-    setState(() {
-      _step = step;
-      _stepMessage = message ?? '';
-    });
-  }
-
-  int _unlockMusicId() =>
-      int.tryParse(_unlockMusicIdController.text.trim()) ?? -1;
-
-  int _itemId() => int.tryParse(_itemIdController.text.trim()) ?? -1;
-
   void _snack(String message) => context.showSnack(message);
 
-  /// 把当前输入框里的收藏品加入待提交列表。
-  void _addItemToList() {
-    final id = _itemId();
-    if (id <= 0) {
-      _snack(AppStrings.collectiblesNeedItemId);
-      return;
-    }
-    if (_pendingItems.any((e) => e.kind == _itemKind && e.id == id)) {
+  /// 加入待提交收藏品；重复时提示并保留输入。
+  bool _addItem(PendingItem item) {
+    if (_pendingItems.any((e) => e.kind == item.kind && e.id == item.id)) {
       _snack(AppStrings.listDuplicate);
-      return;
+      return false;
     }
-    setState(() {
-      _pendingItems.add(_PendingItem(_itemKind, id));
-      _itemIdController.clear();
-    });
+    setState(() => _pendingItems.add(item));
+    return true;
   }
 
-  /// 把当前输入框里的歌曲+勾选的难度加入待解锁列表。
-  void _addMusicToList() {
-    final id = _unlockMusicId();
-    if (id <= 0) {
-      _snack(AppStrings.unlockNeedMusicId);
-      return;
-    }
-    if (!_unlockMusic && !_unlockMaster && !_unlockRemaster) {
-      _snack(AppStrings.unlockNeedOption);
-      return;
-    }
-    if (_pendingMusics.any((e) => e.musicId == id)) {
+  /// 加入待解锁歌曲；重复时提示并保留输入。
+  bool _addMusic(PendingMusic music) {
+    if (_pendingMusics.any((e) => e.musicId == music.musicId)) {
       _snack(AppStrings.listDuplicate);
-      return;
+      return false;
     }
-    setState(() {
-      _pendingMusics.add(
-        _PendingMusic(id, _unlockMusic, _unlockMaster, _unlockRemaster),
-      );
-      _unlockMusicIdController.clear();
-      _unlockMusic = _unlockMaster = _unlockRemaster = false;
-    });
+    setState(() => _pendingMusics.add(music));
+    return true;
   }
 
   /// eaquira UnlockMusic.py 使用 settings 中的默认 musicData。
@@ -244,27 +151,29 @@ class _MusicRiskFeatureViewState extends State<MusicRiskFeatureView>
   }
 
   Future<void> _fetchData() async {
-    if (!TitleServerConfigHolder().isConfigured) return;
+    final service = SessionModel.instance.createTitleService(
+      cookies: widget.cookies,
+    );
+    if (service == null) return;
 
     setState(() {
-      _fetching = true;
+      riskFetching = true;
       _fetchError = null;
       _userAllData = null;
     });
 
     try {
-      final service = TitleApiService.fromHolder(cookies: widget.cookies)!;
       final data = await service.fetchUserAllData(widget.userId);
       if (!mounted) return;
       setState(() {
         _userAllData = data;
-        _fetching = false;
+        riskFetching = false;
       });
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _fetchError = e.toString();
-        _fetching = false;
+        _fetchError = describeApiError(e);
+        riskFetching = false;
       });
     }
   }
@@ -275,37 +184,36 @@ class _MusicRiskFeatureViewState extends State<MusicRiskFeatureView>
       _snack(validationError);
       return;
     }
-    if (!TitleServerConfigHolder().isConfigured) {
-      _snack(AppStrings.ticketNotConfigured);
-      return;
-    }
-    final loginDateTime = widget.loginDateTime;
-    final loginId = widget.loginId;
-    if (loginDateTime == null || loginId == null) {
-      _snack(_notLoggedInMessage);
-      return;
-    }
-    if (cooldownRemaining > 0) {
-      _snack(_cooldownNotice(cooldownRemaining));
+    final guard = riskPreconditionError(
+      loginDateTime: widget.loginDateTime,
+      loginId: widget.loginId,
+      cooldownRemaining: cooldownRemaining,
+      notLoggedInMessage: _notLoggedInMessage,
+      cooldownNotice: _cooldownNotice,
+    );
+    if (guard != null) {
+      _snack(guard);
       return;
     }
 
-    final service = TitleApiService.fromHolder(cookies: widget.cookies)!;
+    final loginDateTime = widget.loginDateTime!;
+    final loginId = widget.loginId!;
+    final service = SessionModel.instance.createTitleService(
+      cookies: widget.cookies,
+    )!;
 
-    setState(() {
-      _running = true;
-      _error = null;
-    });
+    setRiskRunning(true);
+    clearRiskError();
 
     try {
       Map<String, Map<String, dynamic>> data = _userAllData ?? const {};
       if (data.isEmpty) {
-        _updateStep(RiskStep.fetchData);
+        updateRiskStep(RiskStep.fetchData);
         data = await service.fetchUserAllData(widget.userId);
         if (mounted) setState(() => _userAllData = data);
       }
 
-      _updateStep(RiskStep.upload);
+      updateRiskStep(RiskStep.upload);
       final musicData = _buildMusicData();
       final builder = UserAllPayloadBuilder(service.config);
       final packet = builder.build(
@@ -351,28 +259,19 @@ class _MusicRiskFeatureViewState extends State<MusicRiskFeatureView>
 
       await service.upsertUserAll(packet, widget.userId);
 
-      _updateStep(
+      updateRiskStep(
         RiskStep.complete,
         _isUnlock
             ? await _verifyUnlock(service, items)
             : AppStrings.collectiblesSuccess,
       );
 
-      if (_autoLogout && widget.onExitToTitle != null) {
-        // 让成功状态先显示一下，再交给 HomePage 结算、退登并 pop 回主标题。
-        await Future.delayed(const Duration(seconds: 2));
-        if (!mounted) return;
-        _updateStep(RiskStep.logout, AppStrings.exitingToTitle);
-        await widget.onExitToTitle!();
-      }
-    } on TitleApiException catch (e) {
-      _updateStep(RiskStep.failed, e.message);
-      setState(() => _error = e.message);
+      // 让成功状态先显示一下，再交给 HomePage 结算、退登并 pop 回主标题。
+      await autoLogoutAndExit(widget.onExitToTitle);
     } catch (e) {
-      _updateStep(RiskStep.failed, e.toString());
-      setState(() => _error = e.toString());
+      reportRiskError(e);
     } finally {
-      if (mounted) setState(() => _running = false);
+      setRiskRunning(false);
     }
   }
 
@@ -394,7 +293,7 @@ class _MusicRiskFeatureViewState extends State<MusicRiskFeatureView>
         items.map((e) => e['itemKind'] as int),
       );
     } catch (e) {
-      return AppStrings.unlockVerifyFailed('$e');
+      return AppStrings.unlockVerifyFailed(describeApiError(e));
     }
 
     final missing = requested.where((k) => !saved.contains(k)).toList();
@@ -414,545 +313,142 @@ class _MusicRiskFeatureViewState extends State<MusicRiskFeatureView>
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-
     if (!TitleServerConfigHolder().isConfigured) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(32),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(Icons.settings_ethernet,
-                  size: 48, color: theme.colorScheme.primary),
-              const SizedBox(height: 16),
-              Text(AppStrings.ticketNotConfigured,
-                  style: theme.textTheme.titleMedium),
-            ],
-          ),
-        ),
+      return const RiskConfigMissingView(
+        message: AppStrings.ticketNotConfigured,
       );
     }
 
-    return SingleChildScrollView(
-      padding: const EdgeInsets.all(16),
-      child: responsiveBody(
-        context,
-        child: Column(
-          children: [
-            if (!isLoggedIn)
-              AppNotice(
-                _notLoggedInMessage,
-                error: true,
-                icon: Icons.warning_amber_rounded,
-              ),
-            if (isLoggedIn && cooldownRemaining > 0)
-              AppNotice(
-                _cooldownNotice(cooldownRemaining),
-                icon: Icons.timer_outlined,
-              ),
-            _buildDescCard(theme),
-            const SizedBox(height: 12),
-            if (_isUnlock)
-              _buildUnlockCard(theme)
-            else
-              _buildCollectiblesCard(theme),
-            const SizedBox(height: 12),
-            _buildFetchCard(theme),
-            const SizedBox(height: 12),
-            AutoLogoutToggle(
-              value: _autoLogout,
-              enabled: widget.onExitToTitle != null && !_running,
-              onChanged: (v) => setState(() => _autoLogout = v),
-            ),
-            const SizedBox(height: 12),
-            _buildRunButton(theme),
-            if (_step != RiskStep.idle) ...[
-              const SizedBox(height: 16),
-              StepProgressCard(
-                step: _step,
-                message: _stepMessage,
-                error: _error,
-                steps: [
-                  (RiskStep.fetchData, AppStrings.unlockStepFetch),
-                  (
-                    RiskStep.upload,
-                    _isUnlock
-                        ? AppStrings.unlockStepUpload
-                        : AppStrings.collectiblesStepUpload,
-                  ),
-                  if (_autoLogout) (RiskStep.logout, AppStrings.stepLogout),
-                ],
-              ),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildDescCard(ThemeData theme) {
-    return Card(
-      elevation: 0,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(16),
-        side: BorderSide(color: theme.colorScheme.outline.withValues(alpha: 0.3)),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Icon(
-                  _isUnlock ? Icons.lock_open : Icons.card_giftcard,
-                  size: 18,
-                  color: theme.colorScheme.primary,
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    widget.featureTitle,
-                    style: theme.textTheme.labelLarge?.copyWith(
-                      color: theme.colorScheme.primary,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 12),
-            Text(
-              widget.featureDesc,
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: theme.colorScheme.onSurfaceVariant,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildUnlockCard(ThemeData theme) {
-    final enabled = !_running;
-
-    return Card(
-      elevation: 0,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(16),
-        side: BorderSide(color: theme.colorScheme.outline.withValues(alpha: 0.3)),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            TextField(
-              controller: _unlockMusicIdController,
-              enabled: enabled,
-              keyboardType: TextInputType.number,
-              decoration: InputDecoration(
-                labelText: AppStrings.unlockMusicIdLabel,
-                hintText: AppStrings.unlockMusicIdHint,
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                contentPadding: const EdgeInsets.all(14),
-              ),
-            ),
-            const SizedBox(height: 6),
-            _buildUnlockCheckbox(
-              theme,
-              value: _unlockMusic,
-              label: AppStrings.unlockMusicOption,
-              enabled: enabled,
-              onChanged: (v) => setState(() => _unlockMusic = v),
-            ),
-            _buildUnlockCheckbox(
-              theme,
-              value: _unlockMaster,
-              label: AppStrings.unlockMasterOption,
-              enabled: enabled,
-              onChanged: (v) => setState(() => _unlockMaster = v),
-            ),
-            _buildUnlockCheckbox(
-              theme,
-              value: _unlockRemaster,
-              label: AppStrings.unlockRemasterOption,
-              enabled: enabled,
-              onChanged: (v) => setState(() => _unlockRemaster = v),
-            ),
-            const SizedBox(height: 8),
-            _buildAddButton(theme, onPressed: enabled ? _addMusicToList : null),
-            _buildPendingList(
-              theme,
-              title: AppStrings.unlockPendingTitle,
-              emptyHint: AppStrings.unlockPendingEmpty,
-              count: _pendingMusics.length,
-              rows: [
-                for (var i = 0; i < _pendingMusics.length; i++)
-                  _buildPendingRow(
-                    theme,
-                    leading: '#${_pendingMusics[i].musicId}',
-                    trailing: _pendingMusics[i].optionLabel,
-                    onRemove: () => setState(() => _pendingMusics.removeAt(i)),
-                  ),
-              ],
-            ),
-            // DX 段的 Master / Re:Master 不白送，勾选项里漏一个就开不出来，
-            // 这是这段 ID 最容易踩的坑，只在列表真含 DX 曲时才说明。
-            if (_pendingMusics.any(_isDeluxeRange)) ...[
-              const SizedBox(height: 10),
-              Text(
-                AppStrings.unlockDxRangeNotice,
-                style: theme.textTheme.bodySmall?.copyWith(
-                  color: theme.colorScheme.error,
-                  height: 1.5,
-                ),
-              ),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildAddButton(ThemeData theme, {VoidCallback? onPressed}) {
-    return SizedBox(
-      width: double.infinity,
-      child: OutlinedButton.icon(
-        onPressed: onPressed,
-        icon: const Icon(Icons.add, size: 18),
-        label: const Text(AppStrings.listAddButton),
-        style: OutlinedButton.styleFrom(
-          padding: const EdgeInsets.symmetric(vertical: 12),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(10),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildPendingList(
-    ThemeData theme, {
-    required String title,
-    required String emptyHint,
-    required int count,
-    required List<Widget> rows,
-  }) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
+    return RiskPageBody(
       children: [
-        const SizedBox(height: 14),
-        Text(
-          '$title ($count)',
-          style: theme.textTheme.labelLarge?.copyWith(
-            color: theme.colorScheme.primary,
-            fontWeight: FontWeight.w600,
-          ),
+        RiskStatusNotices(
+          isLoggedIn: isLoggedIn,
+          cooldownRemaining: cooldownRemaining,
+          notLoggedInText: _notLoggedInMessage,
+          cooldownText: _cooldownNotice,
         ),
-        const SizedBox(height: 6),
-        if (count == 0)
-          Text(
-            emptyHint,
-            style: theme.textTheme.bodySmall?.copyWith(
-              color: theme.colorScheme.onSurfaceVariant,
-            ),
+        RiskFeatureCard(
+          icon: _isUnlock ? Icons.lock_open : Icons.card_giftcard,
+          title: widget.featureTitle,
+          description: widget.featureDesc,
+        ),
+        const SizedBox(height: 12),
+        if (_isUnlock)
+          UnlockMusicEditorCard(
+            enabled: !riskRunning,
+            onAdd: _addMusic,
+            onError: _snack,
+            pendingList: _buildUnlockPendingList(),
+            showDxNotice: _pendingMusics.any((m) => m.isDeluxeRange),
           )
         else
-          ...rows,
-      ],
-    );
-  }
-
-  Widget _buildPendingRow(
-    ThemeData theme, {
-    required String leading,
-    required String trailing,
-    required VoidCallback onRemove,
-  }) {
-    return Row(
-      children: [
-        Expanded(
-          child: Text(
-            '$leading  $trailing',
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: theme.textTheme.bodySmall?.copyWith(
-              fontFamily: 'monospace',
-            ),
+          CollectiblesEditorCard(
+            enabled: !riskRunning,
+            onAdd: _addItem,
+            onError: _snack,
+            pendingList: _buildCollectiblesPendingList(),
           ),
+        const SizedBox(height: 12),
+        _buildFetchCard(),
+        const SizedBox(height: 12),
+        AutoLogoutToggle(
+          value: riskAutoLogout,
+          enabled: widget.onExitToTitle != null && !riskRunning,
+          onChanged: setRiskAutoLogout,
         ),
-        IconButton(
-          icon: const Icon(Icons.close, size: 18),
-          tooltip: AppStrings.listRemoveTooltip,
-          onPressed: _running ? null : onRemove,
-          color: theme.colorScheme.onSurfaceVariant,
-          visualDensity: VisualDensity.compact,
-        ),
+        const SizedBox(height: 12),
+        _buildRunButton(),
+        if (riskStep != RiskStep.idle) ...[
+          const SizedBox(height: 16),
+          StepProgressCard(
+            step: riskStep,
+            message: riskStepMessage,
+            error: riskError,
+            steps: [
+              (RiskStep.fetchData, AppStrings.unlockStepFetch),
+              (
+                RiskStep.upload,
+                _isUnlock
+                    ? AppStrings.unlockStepUpload
+                    : AppStrings.collectiblesStepUpload,
+              ),
+              if (riskAutoLogout) (RiskStep.logout, AppStrings.stepLogout),
+            ],
+          ),
+        ],
       ],
     );
   }
 
-  Widget _buildUnlockCheckbox(
-    ThemeData theme, {
-    required bool value,
-    required String label,
-    required bool enabled,
-    required ValueChanged<bool> onChanged,
-  }) {
-    return InkWell(
-      borderRadius: BorderRadius.circular(10),
-      onTap: enabled ? () => onChanged(!value) : null,
-      child: Container(
-        width: double.infinity,
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
-        child: Row(
-          children: [
-            Checkbox(
-              value: value,
-              onChanged: enabled ? (v) => onChanged(v ?? false) : null,
-            ),
-            Expanded(
-              child: Text(
-                label,
-                style: theme.textTheme.bodyMedium?.copyWith(
-                  color: enabled
-                      ? null
-                      : theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.6),
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
+  Widget _buildUnlockPendingList() {
+    return RiskPendingList(
+      title: AppStrings.unlockPendingTitle,
+      emptyHint: AppStrings.unlockPendingEmpty,
+      count: _pendingMusics.length,
+      rows: [
+        for (var i = 0; i < _pendingMusics.length; i++)
+          RiskPendingRow(
+            leading: '#${_pendingMusics[i].musicId}',
+            trailing: _pendingMusics[i].optionLabel,
+            enabled: !riskRunning,
+            onRemove: () => setState(() => _pendingMusics.removeAt(i)),
+          ),
+      ],
     );
   }
 
-  Widget _buildCollectiblesCard(ThemeData theme) {
-    final enabled = !_running;
-
-    return Card(
-      elevation: 0,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(16),
-        side: BorderSide(color: theme.colorScheme.outline.withValues(alpha: 0.3)),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            _buildDropdown(
-              value: _itemKind,
-              label: AppStrings.collectiblesItemKindLabel,
-              items: [
-                for (final kind in AppStrings.collectiblesItemKinds)
-                  DropdownMenuItem(
-                    value: kind,
-                    child: Text(
-                      '${AppStrings.collectiblesItemKindName(kind)} ($kind)',
-                    ),
-                  ),
-              ],
-              onChanged: (v) => setState(() => _itemKind = v),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _itemIdController,
-              enabled: enabled,
-              keyboardType: TextInputType.number,
-              decoration: InputDecoration(
-                labelText: AppStrings.collectiblesItemIdLabel,
-                hintText: AppStrings.collectiblesItemIdHint,
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                contentPadding: const EdgeInsets.all(14),
-              ),
-            ),
-            const SizedBox(height: 8),
-            _buildAddButton(theme, onPressed: enabled ? _addItemToList : null),
-            _buildPendingList(
-              theme,
-              title: AppStrings.collectiblesPendingTitle,
-              emptyHint: AppStrings.collectiblesPendingEmpty,
-              count: _pendingItems.length,
-              rows: [
-                for (var i = 0; i < _pendingItems.length; i++)
-                  _buildPendingRow(
-                    theme,
-                    leading:
-                        '${AppStrings.collectiblesItemKindName(_pendingItems[i].kind)} (${_pendingItems[i].kind})',
-                    trailing: '#${_pendingItems[i].id}',
-                    onRemove: () => setState(() => _pendingItems.removeAt(i)),
-                  ),
-              ],
-            ),
-          ],
-        ),
-      ),
+  Widget _buildCollectiblesPendingList() {
+    return RiskPendingList(
+      title: AppStrings.collectiblesPendingTitle,
+      emptyHint: AppStrings.collectiblesPendingEmpty,
+      count: _pendingItems.length,
+      rows: [
+        for (var i = 0; i < _pendingItems.length; i++)
+          RiskPendingRow(
+            leading:
+                '${AppStrings.collectiblesItemKindName(_pendingItems[i].kind)} (${_pendingItems[i].kind})',
+            trailing: '#${_pendingItems[i].id}',
+            enabled: !riskRunning,
+            onRemove: () => setState(() => _pendingItems.removeAt(i)),
+          ),
+      ],
     );
   }
 
-  Widget _buildFetchCard(ThemeData theme) {
+  Widget _buildFetchCard() {
     final hasData = _userAllData != null;
 
-    return Card(
-      elevation: 0,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(16),
-        side: BorderSide(
-          color: hasData
-              ? Colors.green.withValues(alpha: 0.5)
-              : theme.colorScheme.outline.withValues(alpha: 0.3),
-        ),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Icon(
-                  hasData ? Icons.check_circle : Icons.download,
-                  size: 18,
-                  color: hasData ? Colors.green : theme.colorScheme.primary,
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    hasData
-                        ? AppStrings.unlockFetched
-                        : AppStrings.unlockNoData,
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      color: hasData
-                          ? Colors.green
-                          : theme.colorScheme.onSurfaceVariant,
-                    ),
-                  ),
-                ),
-                SizedBox(
-                  height: 32,
-                  child: OutlinedButton.icon(
-                    onPressed: _fetching || _running ? null : _fetchData,
-                    icon: _fetching
-                        ? const SizedBox(
-                            width: 14,
-                            height: 14,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : const Icon(Icons.refresh, size: 16),
-                    label: Text(
-                      _fetching
-                          ? AppStrings.unlockFetching
-                          : hasData
-                              ? AppStrings.unlockRefetch
-                              : AppStrings.unlockFetchData,
-                      style: theme.textTheme.labelSmall,
-                    ),
-                    style: OutlinedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(horizontal: 12),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-            if (_fetchError != null) ...[
-              const SizedBox(height: 12),
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(10),
-                decoration: BoxDecoration(
-                  color: theme.colorScheme.errorContainer,
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Text(
-                  _fetchError!,
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: theme.colorScheme.onErrorContainer,
-                    fontFamily: 'monospace',
-                  ),
-                ),
-              ),
-            ],
-          ],
-        ),
-      ),
+    return RiskFetchCard(
+      hasData: hasData,
+      statusText:
+          hasData ? AppStrings.unlockFetched : AppStrings.unlockNoData,
+      loadingLabel: AppStrings.unlockFetching,
+      actionLabel:
+          hasData ? AppStrings.unlockRefetch : AppStrings.unlockFetchData,
+      error: _fetchError,
+      loading: riskFetching,
+      enabled: !riskRunning,
+      onFetch: _fetchData,
     );
   }
 
-  Widget _buildRunButton(ThemeData theme) {
+  Widget _buildRunButton() {
     final onCooldown = cooldownRemaining > 0;
     final canRun = widget.loginDateTime != null &&
         widget.loginId != null &&
-        !_running &&
         !onCooldown;
 
-    return SizedBox(
-      width: double.infinity,
-      child: FilledButton.icon(
-        onPressed: canRun ? _run : null,
-        icon: _running
-            ? const SizedBox(
-                width: 18,
-                height: 18,
-                child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-              )
-            : Icon(
-                onCooldown
-                    ? Icons.timer_outlined
-                    : (_isUnlock ? Icons.lock_open : Icons.card_giftcard),
-                size: 20,
-              ),
-        label: Text(
-          _running
-              ? AppStrings.unlockRunning
-              : onCooldown
-                  ? AppStrings.ticketCooldownCountdown(cooldownRemaining)
-                  : _isUnlock
-                      ? AppStrings.unlockMusicRun
-                      : AppStrings.collectiblesRun,
-        ),
-        style: FilledButton.styleFrom(
-          padding: const EdgeInsets.symmetric(vertical: 14),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildDropdown({
-    required int value,
-    required String label,
-    required List<DropdownMenuItem<int>> items,
-    required ValueChanged<int> onChanged,
-  }) {
-    return DropdownButtonFormField<int>(
-      initialValue: value,
-      decoration: InputDecoration(
-        labelText: label,
-        border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(10),
-        ),
-        contentPadding: const EdgeInsets.all(14),
-      ),
-      items: items,
-      onChanged: _running
-          ? null
-          : (v) {
-              if (v == null) return;
-              onChanged(v);
-            },
+    return RiskRunButton(
+      running: riskRunning,
+      enabled: canRun,
+      icon: onCooldown
+          ? Icons.timer_outlined
+          : (_isUnlock ? Icons.lock_open : Icons.card_giftcard),
+      label: _isUnlock ? AppStrings.unlockMusicRun : AppStrings.collectiblesRun,
+      runningLabel: AppStrings.unlockRunning,
+      disabledLabel:
+          onCooldown ? AppStrings.ticketCooldownCountdown(cooldownRemaining) : null,
+      onPressed: _run,
     );
   }
 }

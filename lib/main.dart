@@ -11,7 +11,10 @@ void main() async {
 }
 
 class MyApp extends StatelessWidget {
-  const MyApp({super.key});
+  /// 默认从登录页启动；开发预览等入口可传入别的根页面。
+  final Widget? home;
+
+  const MyApp({super.key, this.home});
 
   @override
   Widget build(BuildContext context) {
@@ -31,7 +34,7 @@ class MyApp extends StatelessWidget {
           brightness: Brightness.dark,
         ),
       ),
-      home: const LoginPage(),
+      home: home ?? const LoginPage(),
     );
   }
 }

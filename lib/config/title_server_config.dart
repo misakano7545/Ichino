@@ -14,9 +14,6 @@ class TitleServerConfig {
   final String regionName;
   final String placeName;
   final String keychipId;
-  final String aimeUrl;
-  final String aimeSalt;
-  final String openGameID;
 
   const TitleServerConfig({
     required this.titleServerUrl,
@@ -30,13 +27,20 @@ class TitleServerConfig {
     this.regionName = '',
     this.placeName = '',
     this.keychipId = '',
-    this.aimeUrl = '',
-    this.aimeSalt = '',
-    String? openGameID,
-  }) : openGameID = openGameID ?? 'MAID';
+  });
 
   List<int> get aesKeyBytes => utf8.encode(aesKey);
   List<int> get aesIvBytes => utf8.encode(aesIv);
+
+  /// 扫码登录签的是**完整 Keychip**（`A63E-01C30471007`），游戏服务器那边才用
+  /// 11 位短值。这里按 Astral 的约定补出完整形式：前 4 位 + 连字符 + 余下 + placeId，
+  /// 所以只填了短值也能还原；填不满 11 位就当没配。
+  String get fullKeychipId {
+    final raw = keychipId.replaceAll(RegExp(r'[\s\-]'), '').toUpperCase();
+    if (raw.length < 11) return '';
+    final short = '${raw.substring(0, 4)}-${raw.substring(4)}';
+    return raw.length == 11 ? '$short$placeId' : short;
+  }
 
   Map<String, dynamic> toJson() => {
         'titleServerUrl': titleServerUrl,
@@ -50,9 +54,6 @@ class TitleServerConfig {
         'regionName': regionName,
         'placeName': placeName,
         'keychipId': keychipId,
-        'aimeUrl': aimeUrl,
-        'aimeSalt': aimeSalt,
-        'openGameID': openGameID,
       };
 
   factory TitleServerConfig.fromJson(Map<String, dynamic> json) {
@@ -68,9 +69,6 @@ class TitleServerConfig {
       regionName: json['regionName'] as String? ?? '',
       placeName: json['placeName'] as String? ?? '',
       keychipId: json['keychipId'] as String? ?? '',
-      aimeUrl: json['aimeUrl'] as String? ?? '',
-      aimeSalt: json['aimeSalt'] as String? ?? '',
-      openGameID: json['openGameID'] as String? ?? 'MAID',
     );
   }
 }

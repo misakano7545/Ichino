@@ -1,12 +1,14 @@
 import 'package:flutter/material.dart';
 
-import '../config/responsive.dart';
 import '../config/strings.dart';
 import '../config/title_server_config.dart';
+import '../models/session_model.dart';
 import '../services/title_api_service.dart';
 import '../widgets/app_card.dart';
 import '../widgets/app_notice.dart';
 import '../widgets/cooldown_mixin.dart';
+import '../widgets/risk/risk_run_mixin.dart';
+import '../widgets/risk/risk_widgets.dart';
 import '../widgets/step_progress.dart';
 
 class TicketPage extends StatefulWidget {
@@ -35,18 +37,12 @@ class TicketPage extends StatefulWidget {
 }
 
 class _TicketPageState extends State<TicketPage>
-    with CooldownMixin<TicketPage> {
+    with CooldownMixin<TicketPage>, RiskRunMixin<TicketPage> {
   static const _ticketNameMap = {
     2: '2倍票',
     4: '4倍票',
     5: '5倍票'
   };
-
-  RiskStep _step = RiskStep.idle;
-  String _stepMessage = '';
-  String? _error;
-  bool _running = false;
-  bool _autoLogout = true;
 
   List<Map<String, dynamic>>? _tickets;
   bool _ticketsLoading = false;
@@ -70,16 +66,11 @@ class _TicketPageState extends State<TicketPage>
     return null;
   }
 
-  void _updateStep(RiskStep step, [String? message]) {
-    if (!mounted) return;
-    setState(() {
-      _step = step;
-      _stepMessage = message ?? '';
-    });
-  }
-
   Future<void> _loadTickets() async {
-    if (!TitleServerConfigHolder().isConfigured) return;
+    final service = SessionModel.instance.createTitleService(
+      cookies: widget.cookies,
+    );
+    if (service == null) return;
 
     setState(() {
       _ticketsLoading = true;
@@ -89,7 +80,6 @@ class _TicketPageState extends State<TicketPage>
     });
 
     try {
-      final service = TitleApiService.fromHolder(cookies: widget.cookies)!;
       final data = await service.getUserCharge(widget.userId);
       if (!mounted) return;
 
@@ -101,73 +91,67 @@ class _TicketPageState extends State<TicketPage>
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _ticketsError = e.toString();
+        _ticketsError = describeApiError(e);
         _ticketsLoading = false;
       });
     }
   }
 
   Future<void> _runTicket() async {
-    if (_selectedTicketId == null) {
+    final ticketId = _selectedTicketId;
+    if (ticketId == null) {
       _snack(AppStrings.ticketNotSelected);
       return;
     }
-    if (!TitleServerConfigHolder().isConfigured) {
-      _snack(AppStrings.ticketNotConfigured);
-      return;
-    }
-    final loginDateTime = widget.loginDateTime;
-    if (loginDateTime == null) {
-      _snack(AppStrings.ticketNotLoggedIn);
-      return;
-    }
-    if (cooldownRemaining > 0) {
-      _snack(AppStrings.ticketCooldownNotice(cooldownRemaining));
+    final guard = riskPreconditionError(
+      loginDateTime: widget.loginDateTime,
+      loginId: null,
+      cooldownRemaining: cooldownRemaining,
+      notLoggedInMessage: AppStrings.ticketNotLoggedIn,
+      cooldownNotice: AppStrings.ticketCooldownNotice,
+      requireLoginId: false,
+    );
+    if (guard != null) {
+      _snack(guard);
       return;
     }
 
-    final selectedTicket = _findTicket(_selectedTicketId!);
+    final selectedTicket = _findTicket(ticketId);
     if (selectedTicket != null &&
         (selectedTicket['stock'] as num?)?.toInt() != 0) {
       _snack(AppStrings.ticketStockNotEmpty);
       return;
     }
 
-    final service = TitleApiService.fromHolder(cookies: widget.cookies)!;
-    final ticketId = _selectedTicketId!;
-
-    setState(() {
-      _running = true;
-      _error = null;
-    });
+    final service = SessionModel.instance.createTitleService(
+      cookies: widget.cookies,
+    )!;
+    setRiskRunning(true);
+    clearRiskError();
 
     try {
-      _updateStep(RiskStep.upload);
+      updateRiskStep(RiskStep.upload);
       await service.upsertUserChargeLog(
         userId: widget.userId,
         ticketId: ticketId,
-        loginDateTime: loginDateTime,
+        loginDateTime: widget.loginDateTime!,
         playerRating: widget.playerRating,
       );
 
-      if (_autoLogout && widget.onLogoutRequested != null) {
-        _updateStep(RiskStep.logout);
-        await Future.delayed(const Duration(seconds: 5));
+      if (riskAutoLogout && widget.onLogoutRequested != null) {
+        updateRiskStep(RiskStep.logout);
+        await Future<void>.delayed(const Duration(seconds: 5));
         await widget.onLogoutRequested!();
       }
 
-      _updateStep(
+      updateRiskStep(
         RiskStep.complete,
         '${AppStrings.ticketUsed}: ${_ticketName(ticketId)}',
       );
-    } on TitleApiException catch (e) {
-      _updateStep(RiskStep.failed, e.message);
-      setState(() => _error = e.message);
     } catch (e) {
-      _updateStep(RiskStep.failed, e.toString());
-      setState(() => _error = e.toString());
+      reportRiskError(e);
     } finally {
-      if (mounted) setState(() => _running = false);
+      setRiskRunning(false);
     }
   }
 
@@ -176,63 +160,46 @@ class _TicketPageState extends State<TicketPage>
     final theme = Theme.of(context);
 
     if (!TitleServerConfigHolder().isConfigured) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(32),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(Icons.settings_ethernet, size: 48, color: theme.colorScheme.primary),
-              const SizedBox(height: 16),
-              Text(AppStrings.ticketNotConfigured, style: theme.textTheme.titleMedium),
-            ],
-          ),
-        ),
+      return const RiskConfigMissingView(
+        message: AppStrings.ticketNotConfigured,
       );
     }
 
-    return SingleChildScrollView(
-      padding: const EdgeInsets.all(16),
-      child: responsiveBody(
-        context,
-        child: Column(
-          children: [
-            if (!isLoggedIn)
-              const AppNotice(
-                AppStrings.ticketNotLoggedIn,
-                error: true,
-                icon: Icons.warning_amber_rounded,
-              ),
-            if (isLoggedIn && cooldownRemaining > 0)
-              AppNotice(
-                AppStrings.ticketCooldownNotice(cooldownRemaining),
-                icon: Icons.timer_outlined,
-              ),
-            _buildTicketListCard(theme),
-            const SizedBox(height: 16),
-            AutoLogoutToggle(
-              value: _autoLogout,
-              enabled: widget.onLogoutRequested != null && !_running,
-              onChanged: (v) => setState(() => _autoLogout = v),
-              label: AppStrings.ticketAutoLogout,
-            ),
-            const SizedBox(height: 12),
-            _buildRunButton(theme),
-            if (_step != RiskStep.idle) ...[
-              const SizedBox(height: 16),
-              StepProgressCard(
-                step: _step,
-                message: _stepMessage,
-                error: _error,
-                steps: [
-                  (RiskStep.upload, AppStrings.stepChargeTicket),
-                  if (_autoLogout) (RiskStep.logout, AppStrings.stepLogout),
-                ],
-              ),
-            ],
-          ],
+    return _buildBody(theme);
+  }
+
+  Widget _buildBody(ThemeData theme) {
+    return RiskPageBody(
+      children: [
+        RiskStatusNotices(
+          isLoggedIn: isLoggedIn,
+          cooldownRemaining: cooldownRemaining,
+          notLoggedInText: AppStrings.ticketNotLoggedIn,
+          cooldownText: AppStrings.ticketCooldownNotice,
         ),
-      ),
+        _buildTicketListCard(theme),
+        const SizedBox(height: 16),
+        AutoLogoutToggle(
+          value: riskAutoLogout,
+          enabled: widget.onLogoutRequested != null && !riskRunning,
+          onChanged: setRiskAutoLogout,
+          label: AppStrings.ticketAutoLogout,
+        ),
+        const SizedBox(height: 12),
+        _buildRunButton(theme),
+        if (riskStep != RiskStep.idle) ...[
+          const SizedBox(height: 16),
+          StepProgressCard(
+            step: riskStep,
+            message: riskStepMessage,
+            error: riskError,
+            steps: [
+              (RiskStep.upload, AppStrings.stepChargeTicket),
+              if (riskAutoLogout) (RiskStep.logout, AppStrings.stepLogout),
+            ],
+          ),
+        ],
+      ],
     );
   }
 
@@ -327,7 +294,7 @@ class _TicketPageState extends State<TicketPage>
 
     return InkWell(
       borderRadius: BorderRadius.circular(8),
-      onTap: _running
+      onTap: riskRunning
           ? null
           : () {
               setState(() {
@@ -415,7 +382,7 @@ class _TicketPageState extends State<TicketPage>
         ? _ticketName(_selectedTicketId!)
         : null;
     final onCooldown = cooldownRemaining > 0;
-    final canRun = widget.loginDateTime != null && !_running && !onCooldown;
+    final canRun = widget.loginDateTime != null && !onCooldown;
 
     return Column(
       children: [
@@ -437,34 +404,18 @@ class _TicketPageState extends State<TicketPage>
           ),
           const SizedBox(height: 12),
         ],
-        SizedBox(
-          width: double.infinity,
-          child: FilledButton.icon(
-            onPressed: canRun ? _runTicket : null,
-            icon: _running
-                ? const SizedBox(
-                    width: 18,
-                    height: 18,
-                    child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                  )
-                : Icon(onCooldown ? Icons.timer_outlined : Icons.play_arrow, size: 20),
-            label: Text(
-              _running
-                  ? AppStrings.runningTicket
-                  : onCooldown
-                      ? AppStrings.ticketCooldownCountdown(cooldownRemaining)
-                      : AppStrings.runTicket,
-            ),
-            style: FilledButton.styleFrom(
-              padding: const EdgeInsets.symmetric(vertical: 14),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(12),
-              ),
-            ),
-          ),
+        RiskRunButton(
+          running: riskRunning,
+          enabled: canRun,
+          icon: onCooldown ? Icons.timer_outlined : Icons.play_arrow,
+          label: AppStrings.runTicket,
+          runningLabel: AppStrings.runningTicket,
+          disabledLabel: onCooldown
+              ? AppStrings.ticketCooldownCountdown(cooldownRemaining)
+              : null,
+          onPressed: _runTicket,
         ),
       ],
     );
   }
-
 }

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 
 import '../config/strings.dart';
+import '../models/session_model.dart';
 import '../services/account_backup_service.dart';
 import '../services/title_api_service.dart';
 import 'app_card.dart';
@@ -28,7 +29,9 @@ class _AccountBackupCardState extends State<AccountBackupCard> {
   String? _error;
 
   Future<void> _run() async {
-    final service = TitleApiService.fromHolder(cookies: widget.cookies);
+    final service = SessionModel.instance.createTitleService(
+      cookies: widget.cookies,
+    );
     if (service == null) {
       context.showSnack(AppStrings.ticketNotConfigured);
       return;
@@ -56,7 +59,7 @@ class _AccountBackupCardState extends State<AccountBackupCard> {
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _error = '$e';
+        _error = describeApiError(e);
         _running = false;
       });
     }

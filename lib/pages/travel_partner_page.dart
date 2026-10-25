@@ -1,15 +1,16 @@
 
 import 'package:flutter/material.dart';
 
-import '../config/responsive.dart';
 import '../config/strings.dart';
-import '../config/title_server_config.dart';
+import '../models/session_model.dart';
 import '../models/user_character.dart';
 import '../services/title_api_service.dart';
 import '../services/user_all_payload_builder.dart';
 import '../widgets/app_card.dart';
 import '../widgets/app_notice.dart';
 import '../widgets/cooldown_mixin.dart';
+import '../widgets/risk/risk_run_mixin.dart';
+import '../widgets/risk/risk_widgets.dart';
 import '../widgets/step_progress.dart';
 
 /// 旅行伙伴页：发放角色 + 编组出战槽位。
@@ -44,7 +45,7 @@ class TravelPartnerPage extends StatefulWidget {
 }
 
 class _TravelPartnerPageState extends State<TravelPartnerPage>
-    with CooldownMixin<TravelPartnerPage> {
+    with CooldownMixin<TravelPartnerPage>, RiskRunMixin<TravelPartnerPage> {
   final _grantIdController = TextEditingController();
 
   /// 每个出战槽位一个等级输入框，留空表示不改该角色的等级。
@@ -57,12 +58,6 @@ class _TravelPartnerPageState extends State<TravelPartnerPage>
   Map<String, Map<String, dynamic>> _userAllData = const {};
   final List<int> _pendingGrant = [];
   List<int> _slots = normalizeCharaSlot(const []);
-
-  bool _loading = false;
-  bool _running = false;
-  bool _autoLogout = true;
-  RiskStep _step = RiskStep.idle;
-  String _stepMessage = '';
 
   @override
   int? get cooldownLoginDateTime => widget.loginDateTime;
@@ -84,11 +79,13 @@ class _TravelPartnerPageState extends State<TravelPartnerPage>
           _pendingGrant.contains(characterId));
 
   Future<void> _fetchData() async {
-    if (!TitleServerConfigHolder().isConfigured) return;
-    setState(() => _loading = true);
+    final service = SessionModel.instance.createTitleService(
+      cookies: widget.cookies,
+    );
+    if (service == null) return;
+    setRiskFetching(true);
 
     try {
-      final service = TitleApiService.fromHolder(cookies: widget.cookies)!;
       final results = await Future.wait([
         service.getUserCharacters(widget.userId),
         service.fetchUserAllData(widget.userId),
@@ -109,12 +106,12 @@ class _TravelPartnerPageState extends State<TravelPartnerPage>
         _userAllData = all;
         _slots = normalizeCharaSlot(slots);
         // 槽位里引用了但列表没有的角色，保留为可选，避免下拉框丢项。
-        _loading = false;
+        riskFetching = false;
       });
     } catch (e) {
       if (!mounted) return;
-      setState(() => _loading = false);
-      _snack('${AppStrings.loadFailed}: $e');
+      setState(() => riskFetching = false);
+      _snack('${AppStrings.loadFailed}: ${describeApiError(e)}');
     }
   }
 
@@ -192,18 +189,15 @@ class _TravelPartnerPageState extends State<TravelPartnerPage>
   }
 
   Future<void> _run() async {
-    if (!TitleServerConfigHolder().isConfigured) {
-      _snack(AppStrings.ticketNotConfigured);
-      return;
-    }
-    final loginDateTime = widget.loginDateTime;
-    final loginId = widget.loginId;
-    if (loginDateTime == null || loginId == null) {
-      _snack(AppStrings.travelPartnerNotLoggedIn);
-      return;
-    }
-    if (cooldownRemaining > 0) {
-      _snack(AppStrings.travelPartnerCooldownNotice(cooldownRemaining));
+    final guard = riskPreconditionError(
+      loginDateTime: widget.loginDateTime,
+      loginId: widget.loginId,
+      cooldownRemaining: cooldownRemaining,
+      notLoggedInMessage: AppStrings.travelPartnerNotLoggedIn,
+      cooldownNotice: AppStrings.travelPartnerCooldownNotice,
+    );
+    if (guard != null) {
+      _snack(guard);
       return;
     }
     final validationError = _validate();
@@ -212,20 +206,25 @@ class _TravelPartnerPageState extends State<TravelPartnerPage>
       return;
     }
 
-    setState(() => _running = true);
+    final loginDateTime = widget.loginDateTime!;
+    final loginId = widget.loginId!;
+    setRiskRunning(true);
+    clearRiskError();
 
     try {
-      final service = TitleApiService.fromHolder(cookies: widget.cookies)!;
+      final service = SessionModel.instance.createTitleService(
+        cookies: widget.cookies,
+      )!;
       final builder = UserAllPayloadBuilder(service.config);
 
       var data = _userAllData;
       if (data.isEmpty) {
-        _updateStep(RiskStep.fetchData);
+        updateRiskStep(RiskStep.fetchData);
         data = await service.fetchUserAllData(widget.userId);
         if (mounted) setState(() => _userAllData = data);
       }
 
-      _updateStep(RiskStep.upload);
+      updateRiskStep(RiskStep.upload);
       final packet = builder.build(
         userId: widget.userId,
         loginId: loginId,
@@ -273,25 +272,17 @@ class _TravelPartnerPageState extends State<TravelPartnerPage>
       // 两种失败在返回值上完全一样（returnCode 都是 1），只能靠回读区分：
       // 服务器没写入 userCharacterList，还是写入了但 ID 不在机台 Chara 表里
       // 被客户端 CharacterSelectProces 静默跳过。
-      _updateStep(
+      updateRiskStep(
         RiskStep.complete,
         _pendingGrant.isEmpty
             ? AppStrings.travelPartnerSuccess
             : await _verifyGranted(service),
       );
-
-      if (_autoLogout && widget.onExitToTitle != null) {
-        await Future.delayed(const Duration(seconds: 2));
-        if (!mounted) return;
-        _updateStep(RiskStep.logout, AppStrings.exitingToTitle);
-        await widget.onExitToTitle!();
-      }
-    } on TitleApiException catch (e) {
-      _updateStep(RiskStep.failed, e.message);
+      await autoLogoutAndExit(widget.onExitToTitle);
     } catch (e) {
-      _updateStep(RiskStep.failed, '$e');
+      reportRiskError(e);
     } finally {
-      if (mounted) setState(() => _running = false);
+      setRiskRunning(false);
     }
   }
 
@@ -301,7 +292,7 @@ class _TravelPartnerPageState extends State<TravelPartnerPage>
     try {
       owned = await service.getUserCharacters(widget.userId);
     } catch (e) {
-      return AppStrings.travelPartnerVerifyFailed('$e');
+      return AppStrings.travelPartnerVerifyFailed(describeApiError(e));
     }
     if (mounted) setState(() => _owned = owned);
 
@@ -309,14 +300,6 @@ class _TravelPartnerPageState extends State<TravelPartnerPage>
     final missing = requested.where((id) => !saved.contains(id)).toList();
     if (missing.isEmpty) return AppStrings.travelPartnerVerified(requested.length);
     return AppStrings.travelPartnerNotSaved(missing.join(' / '));
-  }
-
-  void _updateStep(RiskStep step, [String? message]) {
-    if (!mounted) return;
-    setState(() {
-      _step = step;
-      _stepMessage = message ?? '';
-    });
   }
 
   @override
@@ -327,211 +310,146 @@ class _TravelPartnerPageState extends State<TravelPartnerPage>
       appBar: AppBar(
         title: const Text(AppStrings.travelPartnerFeatureTitle),
       ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(16),
-        child: responsiveBody(
-          context,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              if (!isLoggedIn)
-                const AppNotice(
-                  AppStrings.travelPartnerNotLoggedIn,
-                  error: true,
-                ),
-              if (isLoggedIn && cooldownRemaining > 0)
-                AppNotice(
-                  AppStrings.travelPartnerCooldownNotice(cooldownRemaining),
-                ),
-              _sectionCard(
-                theme,
-                icon: Icons.card_giftcard,
-                title: AppStrings.travelPartnerFeatureDesc,
-              ),
-              const SizedBox(height: 12),
-              _fetchCard(theme),
-              const SizedBox(height: 12),
-              _grantCard(theme),
-              const SizedBox(height: 12),
-              _slotCard(theme),
-              const SizedBox(height: 12),
-              _ownedCard(theme),
-              const SizedBox(height: 12),
-              AutoLogoutToggle(
-                value: _autoLogout,
-                enabled: widget.onExitToTitle != null && !_running,
-                onChanged: (v) => setState(() => _autoLogout = v),
-              ),
-              const SizedBox(height: 12),
-              _runButton(theme),
-              if (_step != RiskStep.idle) ...[
-                const SizedBox(height: 16),
-                StepProgressCard(
-                  step: _step,
-                  message: _stepMessage,
-                  steps: [
-                    (
-                      RiskStep.fetchData,
-                      AppStrings.travelPartnerStepFetch,
-                    ),
-                    (
-                      RiskStep.upload,
-                      AppStrings.travelPartnerStepUpload,
-                    ),
-                    if (_autoLogout) (RiskStep.logout, AppStrings.stepLogout),
-                  ],
-                ),
+      body: RiskPageBody(
+        children: [
+          RiskStatusNotices(
+            isLoggedIn: isLoggedIn,
+            cooldownRemaining: cooldownRemaining,
+            notLoggedInText: AppStrings.travelPartnerNotLoggedIn,
+            cooldownText: AppStrings.travelPartnerCooldownNotice,
+          ),
+          RiskFeatureCard(
+            icon: Icons.card_giftcard,
+            title: AppStrings.travelPartnerFeatureDesc,
+          ),
+          const SizedBox(height: 12),
+          RiskFetchCard(
+            hasData: _userAllData.isNotEmpty && _owned.isNotEmpty,
+            statusText: _userAllData.isNotEmpty && _owned.isNotEmpty
+                ? AppStrings.travelPartnerFetched
+                : AppStrings.travelPartnerNoData,
+            loadingLabel: AppStrings.travelPartnerFetching,
+            actionLabel: _userAllData.isNotEmpty
+                ? AppStrings.travelPartnerRefetch
+                : AppStrings.travelPartnerFetchData,
+            loading: riskFetching,
+            enabled: !riskRunning,
+            onFetch: _fetchData,
+          ),
+          const SizedBox(height: 12),
+          _grantCard(theme),
+          const SizedBox(height: 12),
+          _slotCard(theme),
+          const SizedBox(height: 12),
+          _ownedCard(theme),
+          const SizedBox(height: 12),
+          AutoLogoutToggle(
+            value: riskAutoLogout,
+            enabled: widget.onExitToTitle != null && !riskRunning,
+            onChanged: setRiskAutoLogout,
+          ),
+          const SizedBox(height: 12),
+          RiskRunButton(
+            running: riskRunning,
+            enabled: isLoggedIn,
+            icon: Icons.send,
+            label: AppStrings.travelPartnerRun,
+            runningLabel: AppStrings.travelPartnerRunning,
+            onPressed: _run,
+          ),
+          if (riskStep != RiskStep.idle) ...[
+            const SizedBox(height: 16),
+            StepProgressCard(
+              step: riskStep,
+              message: riskStepMessage,
+              error: riskError,
+              steps: [
+                (RiskStep.fetchData, AppStrings.travelPartnerStepFetch),
+                (RiskStep.upload, AppStrings.travelPartnerStepUpload),
+                if (riskAutoLogout) (RiskStep.logout, AppStrings.stepLogout),
               ],
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _sectionCard(
-    ThemeData theme, {
-    required IconData icon,
-    required String title,
-    List<Widget> children = const [],
-  }) {
-    return AppCard(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SectionTitle(icon: icon, title: title),
-          ...children,
-        ],
-      ),
-    );
-  }
-
-  Widget _fetchCard(ThemeData theme) {
-    final hasData = _userAllData.isNotEmpty && _owned.isNotEmpty;
-    return AppCard(
-      child: Row(
-        children: [
-          Icon(
-            hasData ? Icons.check_circle : Icons.download,
-            size: 18,
-            color: hasData ? Colors.green : theme.colorScheme.primary,
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              hasData
-                  ? AppStrings.travelPartnerFetched
-                  : AppStrings.travelPartnerNoData,
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: hasData ? Colors.green : theme.colorScheme.onSurfaceVariant,
-              ),
             ),
-          ),
-          SizedBox(
-            height: 32,
-            child: OutlinedButton.icon(
-              onPressed: _loading || _running ? null : _fetchData,
-              icon: _loading
-                  ? const SizedBox(
-                      width: 14,
-                      height: 14,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.refresh, size: 16),
-              label: Text(
-                _loading
-                    ? AppStrings.travelPartnerFetching
-                    : _userAllData.isNotEmpty
-                        ? AppStrings.travelPartnerRefetch
-                        : AppStrings.travelPartnerFetchData,
-                style: theme.textTheme.labelSmall,
-              ),
-              style: OutlinedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(horizontal: 12),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(8),
-                ),
-              ),
-            ),
-          ),
+          ],
         ],
       ),
     );
   }
 
   Widget _grantCard(ThemeData theme) {
-    final enabled = !_running;
-    return _sectionCard(
-      theme,
+    final enabled = !riskRunning;
+    return RiskFeatureCard(
       icon: Icons.add_circle_outline,
       title: AppStrings.travelPartnerGrantTitle,
-      children: [
-        const SizedBox(height: 14),
-        TextField(
-          controller: _grantIdController,
-          enabled: enabled,
-          keyboardType: TextInputType.number,
-          decoration: InputDecoration(
-            labelText: AppStrings.travelPartnerCharacterIdLabel,
-            hintText: AppStrings.travelPartnerCharacterIdHint,
-            border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(10),
-            ),
-            contentPadding: const EdgeInsets.all(14),
-          ),
-        ),
-        const SizedBox(height: 8),
-        SizedBox(
-          width: double.infinity,
-          child: OutlinedButton.icon(
-            onPressed: enabled ? _addGrant : null,
-            icon: const Icon(Icons.add, size: 18),
-            label: const Text(AppStrings.listAddButton),
-            style: OutlinedButton.styleFrom(
-              padding: const EdgeInsets.symmetric(vertical: 12),
-              shape: RoundedRectangleBorder(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const SizedBox(height: 14),
+          TextField(
+            controller: _grantIdController,
+            enabled: enabled,
+            keyboardType: TextInputType.number,
+            decoration: InputDecoration(
+              labelText: AppStrings.travelPartnerCharacterIdLabel,
+              hintText: AppStrings.travelPartnerCharacterIdHint,
+              border: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(10),
+              ),
+              contentPadding: const EdgeInsets.all(14),
+            ),
+          ),
+          const SizedBox(height: 8),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: enabled ? _addGrant : null,
+              icon: const Icon(Icons.add, size: 18),
+              label: const Text(AppStrings.listAddButton),
+              style: OutlinedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10),
+                ),
               ),
             ),
           ),
-        ),
-        const SizedBox(height: 10),
-        Text(
-          _pendingGrant.isEmpty
-              ? AppStrings.travelPartnerGrantEmpty
-              : _pendingGrant.map((e) => '#$e').join('  '),
-          style: theme.textTheme.bodySmall?.copyWith(
-            fontFamily: 'monospace',
-            color: _pendingGrant.isEmpty
-                ? theme.colorScheme.onSurfaceVariant
-                : theme.colorScheme.onSurface,
-          ),
-        ),
-        const SizedBox(height: 12),
-        Text(
-          AppStrings.travelPartnerIdRangeTitle,
-          style: theme.textTheme.labelMedium?.copyWith(
-            fontWeight: FontWeight.w600,
-          ),
-        ),
-        const SizedBox(height: 4),
-        Text(
-          AppStrings.travelPartnerIdRangeBody,
-          style: theme.textTheme.bodySmall?.copyWith(
-            color: theme.colorScheme.onSurfaceVariant,
-            height: 1.5,
-          ),
-        ),
-        if (_pendingGrant.any(_isSuspectId)) ...[
-          const SizedBox(height: 8),
+          const SizedBox(height: 10),
           Text(
-            AppStrings.travelPartnerIdUnknown,
+            _pendingGrant.isEmpty
+                ? AppStrings.travelPartnerGrantEmpty
+                : _pendingGrant.map((e) => '#$e').join('  '),
             style: theme.textTheme.bodySmall?.copyWith(
-              color: theme.colorScheme.error,
+              fontFamily: 'monospace',
+              color: _pendingGrant.isEmpty
+                  ? theme.colorScheme.onSurfaceVariant
+                  : theme.colorScheme.onSurface,
             ),
           ),
+          const SizedBox(height: 12),
+          Text(
+            AppStrings.travelPartnerIdRangeTitle,
+            style: theme.textTheme.labelMedium?.copyWith(
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            AppStrings.travelPartnerIdRangeBody,
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+              height: 1.5,
+            ),
+          ),
+          if (_pendingGrant.any(_isSuspectId)) ...[
+            const SizedBox(height: 8),
+            Text(
+              AppStrings.travelPartnerIdUnknown,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.error,
+              ),
+            ),
+          ],
         ],
-      ],
+      ),
     );
   }
 
@@ -558,60 +476,23 @@ class _TravelPartnerPageState extends State<TravelPartnerPage>
     }.toList()
       ..sort();
 
-    return _sectionCard(
-      theme,
+    return RiskFeatureCard(
       icon: Icons.groups_outlined,
       title: AppStrings.travelPartnerSlotTitle,
-      children: [
-        const SizedBox(height: 14),
-        for (var i = 0; i < 5; i++)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 12),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                DropdownButtonFormField<int>(
-                  initialValue: _slots[i],
-                  decoration: InputDecoration(
-                    labelText: AppStrings.travelPartnerSlotLabel(i),
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    contentPadding: const EdgeInsets.symmetric(
-                      horizontal: 14,
-                      vertical: 12,
-                    ),
-                  ),
-                  items: [
-                    DropdownMenuItem(
-                      value: 0,
-                      child: Text(
-                        AppStrings.travelPartnerSlotNone,
-                        style: theme.textTheme.bodyMedium,
-                      ),
-                    ),
-                    for (final id in optionIds)
-                      DropdownMenuItem(value: id, child: Text('#$id')),
-                  ],
-                  onChanged: _running
-                      ? null
-                      : (v) => setState(() {
-                          final next = [..._slots];
-                          next[i] = v ?? 0;
-                          _slots = next;
-                        }),
-                ),
-                if (_slots[i] != 0) ...[
-                  const SizedBox(height: 6),
-                  TextField(
-                    controller: _slotLevelControllers[i],
-                    enabled: !_running,
-                    keyboardType: TextInputType.number,
-                    onChanged: (_) => setState(() {}),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const SizedBox(height: 14),
+          for (var i = 0; i < 5; i++)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  DropdownButtonFormField<int>(
+                    initialValue: _slots[i],
                     decoration: InputDecoration(
-                      isDense: true,
-                      labelText: AppStrings.travelPartnerLevelLabel,
-                      hintText: AppStrings.travelPartnerLevelHint,
+                      labelText: AppStrings.travelPartnerSlotLabel(i),
                       border: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(10),
                       ),
@@ -620,27 +501,66 @@ class _TravelPartnerPageState extends State<TravelPartnerPage>
                         vertical: 12,
                       ),
                     ),
+                    items: [
+                      DropdownMenuItem(
+                        value: 0,
+                        child: Text(
+                          AppStrings.travelPartnerSlotNone,
+                          style: theme.textTheme.bodyMedium,
+                        ),
+                      ),
+                      for (final id in optionIds)
+                        DropdownMenuItem(value: id, child: Text('#$id')),
+                    ],
+                    onChanged: riskRunning
+                        ? null
+                        : (v) => setState(() {
+                            final next = [..._slots];
+                            next[i] = v ?? 0;
+                            _slots = next;
+                          }),
                   ),
-                  ..._levelHintLines(theme, _slotLevelControllers[i].text),
+                  if (_slots[i] != 0) ...[
+                    const SizedBox(height: 6),
+                    TextField(
+                      controller: _slotLevelControllers[i],
+                      enabled: !riskRunning,
+                      keyboardType: TextInputType.number,
+                      onChanged: (_) => setState(() {}),
+                      decoration: InputDecoration(
+                        isDense: true,
+                        labelText: AppStrings.travelPartnerLevelLabel,
+                        hintText: AppStrings.travelPartnerLevelHint,
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 14,
+                          vertical: 12,
+                        ),
+                      ),
+                    ),
+                    ..._levelHintLines(theme, _slotLevelControllers[i].text),
+                  ],
                 ],
-              ],
+              ),
             ),
-          ),
-        SizedBox(
-          width: double.infinity,
-          child: OutlinedButton.icon(
-            onPressed: _running ? null : _copySlot0ToOthers,
-            icon: const Icon(Icons.copy_all_outlined, size: 18),
-            label: const Text(AppStrings.travelPartnerCopySlot0),
-            style: OutlinedButton.styleFrom(
-              padding: const EdgeInsets.symmetric(vertical: 12),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(10),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: riskRunning ? null : _copySlot0ToOthers,
+              icon: const Icon(Icons.copy_all_outlined, size: 18),
+              label: const Text(AppStrings.travelPartnerCopySlot0),
+              style: OutlinedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10),
+                ),
               ),
             ),
           ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 
@@ -664,70 +584,46 @@ class _TravelPartnerPageState extends State<TravelPartnerPage>
   }
 
   Widget _ownedCard(ThemeData theme) {
-    return _sectionCard(
-      theme,
+    return RiskFeatureCard(
       icon: Icons.workspace_premium_outlined,
-      title:
-          '${AppStrings.travelPartnerOwnedTitle} (${_owned.length})',
-      children: [
-        const SizedBox(height: 14),
-        if (_owned.isEmpty)
-          Text(
-            AppStrings.travelPartnerOwnedEmpty,
-            style: theme.textTheme.bodySmall?.copyWith(
-              color: theme.colorScheme.onSurfaceVariant,
-            ),
-          )
-        else
-          Wrap(
-            spacing: 8,
-            runSpacing: 6,
-            children: [
-              for (final c in _owned)
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 10,
-                    vertical: 4,
-                  ),
-                  decoration: BoxDecoration(
-                    color: theme.colorScheme.surfaceContainerHighest
-                        .withValues(alpha: 0.5),
-                    borderRadius: BorderRadius.circular(6),
-                  ),
-                  child: Text(
-                    '#${c.characterId} Lv${c.level}',
-                    style: theme.textTheme.labelSmall?.copyWith(
-                      fontFamily: 'monospace',
+      title: '${AppStrings.travelPartnerOwnedTitle} (${_owned.length})',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const SizedBox(height: 14),
+          if (_owned.isEmpty)
+            Text(
+              AppStrings.travelPartnerOwnedEmpty,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            )
+          else
+            Wrap(
+              spacing: 8,
+              runSpacing: 6,
+              children: [
+                for (final c in _owned)
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 4,
+                    ),
+                    decoration: BoxDecoration(
+                      color: theme.colorScheme.surfaceContainerHighest
+                          .withValues(alpha: 0.5),
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: Text(
+                      '#${c.characterId} Lv${c.level}',
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        fontFamily: 'monospace',
+                      ),
                     ),
                   ),
-                ),
-            ],
-          ),
-      ],
-    );
-  }
-
-  Widget _runButton(ThemeData theme) {
-    return SizedBox(
-      width: double.infinity,
-      child: FilledButton.icon(
-        onPressed: _running || !isLoggedIn ? null : _run,
-        icon: _running
-            ? const SizedBox(
-                width: 20,
-                height: 20,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              )
-            : const Icon(Icons.send, size: 20),
-        label: Text(
-          _running ? AppStrings.travelPartnerRunning : AppStrings.travelPartnerRun,
-        ),
-        style: FilledButton.styleFrom(
-          padding: const EdgeInsets.symmetric(vertical: 14),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12),
-          ),
-        ),
+              ],
+            ),
+        ],
       ),
     );
   }

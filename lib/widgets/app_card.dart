@@ -11,6 +11,7 @@ class AppCard extends StatelessWidget {
   final EdgeInsetsGeometry padding;
   final Color? borderColor;
   final EdgeInsetsGeometry? margin;
+  final VoidCallback? onTap;
 
   const AppCard({
     super.key,
@@ -18,11 +19,14 @@ class AppCard extends StatelessWidget {
     this.padding = const EdgeInsets.all(20),
     this.borderColor,
     this.margin,
+    this.onTap,
   });
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final content = Padding(padding: padding, child: child);
+
     return Card(
       elevation: 0,
       margin: margin,
@@ -33,7 +37,13 @@ class AppCard extends StatelessWidget {
               theme.colorScheme.outline.withValues(alpha: 0.3),
         ),
       ),
-      child: Padding(padding: padding, child: child),
+      child: onTap == null
+          ? content
+          : InkWell(
+              borderRadius: BorderRadius.circular(16),
+              onTap: onTap,
+              child: content,
+            ),
     );
   }
 }

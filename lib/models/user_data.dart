@@ -1,3 +1,5 @@
+import '../core/json_value.dart';
+
 class UserDataBean {
   final int userId;
   final String userName;
@@ -84,67 +86,49 @@ class UserDataBean {
   });
 
   factory UserDataBean.fromJson(Map<String, dynamic> json) {
-    final ud = (json['userData'] as Map<String, dynamic>?) ?? const {};
-
-    int toInt(dynamic v) {
-      if (v == null) return 0;
-      if (v is int) return v;
-      if (v is num) return v.toInt();
-      if (v is String) return int.tryParse(v) ?? 0;
-      return 0;
-    }
-
-    bool toBool(dynamic v) {
-      if (v == null) return false;
-      if (v is bool) return v;
-      if (v is num) return v != 0;
-      if (v is String) return v == '1' || v.toLowerCase() == 'true';
-      return false;
-    }
-
-    String toStr(dynamic v) => v?.toString() ?? '';
+    final ud = jsonMap(json['userData']);
 
     return UserDataBean(
-      userId: toInt(json['userId']),
-      userName: toStr(ud['userName']),
+      userId: jsonInt(json['userId']),
+      userName: jsonString(ud['userName']),
       friendCode: ud['friendCode']?.toString(),
-      isNetMember: toBool(ud['isNetMember']),
-      point: toInt(ud['point']),
-      totalPoint: toInt(ud['totalPoint']),
-      playerRating: toInt(ud['playerRating']),
-      playerOldRating: toInt(ud['playerOldRating']),
-      playerNewRating: toInt(ud['playerNewRating']),
-      highestRating: toInt(ud['highestRating']),
-      musicRating: toInt(ud['musicRating']),
-      gradeRank: toInt(ud['gradeRank']),
-      courseRank: toInt(ud['courseRank']),
-      classRank: toInt(ud['classRank']),
-      nameplateId: toInt(ud['nameplateId']),
-      frameId: toInt(ud['frameId']),
-      iconId: toInt(ud['iconId']),
-      trophyId: toInt(ud['trophyId']),
-      plateId: toInt(ud['plateId']),
-      titleId: toInt(ud['titleId']),
-      partnerId: toInt(ud['partnerId']),
-      playCount: toInt(ud['playCount']),
-      currentPlayCount: toInt(ud['currentPlayCount']),
-      totalSync: toInt(ud['totalSync']),
-      totalAchievement: toInt(ud['totalAchievement']),
-      totalDeluxscore: toInt(ud['totalDeluxscore']),
-      totalAwake: toInt(ud['totalAwake']),
-      lastGameId: toStr(ud['lastGameId']),
-      lastRomVersion: toStr(ud['lastRomVersion']),
-      lastDataVersion: toStr(ud['lastDataVersion']),
-      lastLoginDate: toStr(ud['lastLoginDate']),
-      lastPlayDate: toStr(ud['lastPlayDate']),
-      firstGameId: toStr(ud['firstGameId']),
-      firstRomVersion: toStr(ud['firstRomVersion']),
-      firstDataVersion: toStr(ud['firstDataVersion']),
-      firstPlayDate: toStr(ud['firstPlayDate']),
-      lastRegionName: toStr(ud['lastRegionName']),
-      lastRegionId: toInt(ud['lastRegionId']),
-      dailyBonusDate: toStr(ud['dailyBonusDate']),
-      banState: toInt(json['banState']),
+      isNetMember: jsonBool(ud['isNetMember']),
+      point: jsonInt(ud['point']),
+      totalPoint: jsonInt(ud['totalPoint']),
+      playerRating: jsonInt(ud['playerRating']),
+      playerOldRating: jsonInt(ud['playerOldRating']),
+      playerNewRating: jsonInt(ud['playerNewRating']),
+      highestRating: jsonInt(ud['highestRating']),
+      musicRating: jsonInt(ud['musicRating']),
+      gradeRank: jsonInt(ud['gradeRank']),
+      courseRank: jsonInt(ud['courseRank']),
+      classRank: jsonInt(ud['classRank']),
+      nameplateId: jsonInt(ud['nameplateId']),
+      frameId: jsonInt(ud['frameId']),
+      iconId: jsonInt(ud['iconId']),
+      trophyId: jsonInt(ud['trophyId']),
+      plateId: jsonInt(ud['plateId']),
+      titleId: jsonInt(ud['titleId']),
+      partnerId: jsonInt(ud['partnerId']),
+      playCount: jsonInt(ud['playCount']),
+      currentPlayCount: jsonInt(ud['currentPlayCount']),
+      totalSync: jsonInt(ud['totalSync']),
+      totalAchievement: jsonInt(ud['totalAchievement']),
+      totalDeluxscore: jsonInt(ud['totalDeluxscore']),
+      totalAwake: jsonInt(ud['totalAwake']),
+      lastGameId: jsonString(ud['lastGameId']),
+      lastRomVersion: jsonString(ud['lastRomVersion']),
+      lastDataVersion: jsonString(ud['lastDataVersion']),
+      lastLoginDate: jsonString(ud['lastLoginDate']),
+      lastPlayDate: jsonString(ud['lastPlayDate']),
+      firstGameId: jsonString(ud['firstGameId']),
+      firstRomVersion: jsonString(ud['firstRomVersion']),
+      firstDataVersion: jsonString(ud['firstDataVersion']),
+      firstPlayDate: jsonString(ud['firstPlayDate']),
+      lastRegionName: jsonString(ud['lastRegionName']),
+      lastRegionId: jsonInt(ud['lastRegionId']),
+      dailyBonusDate: jsonString(ud['dailyBonusDate']),
+      banState: jsonInt(json['banState']),
     );
   }
 }

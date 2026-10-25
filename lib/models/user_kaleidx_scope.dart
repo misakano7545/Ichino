@@ -1,3 +1,5 @@
+import '../core/json_value.dart';
+
 /// `Net.VO.Mai2.UserKaleidxScope`（万花筒 / 宿命之门），走
 /// `upsertUserAll.userKaleidxScopeList`，主键是 `gateId`。
 ///
@@ -130,47 +132,28 @@ class UserKaleidxScopeBean {
               : ''),
   );
 
-  static int _toInt(dynamic v) {
-    if (v is int) return v;
-    if (v is num) return v.toInt();
-    if (v is String) return int.tryParse(v) ?? 0;
-    return 0;
-  }
-
-  static bool _toBool(dynamic v) {
-    if (v is bool) return v;
-    if (v is num) return v != 0;
-    if (v is String) return v == '1' || v.toLowerCase() == 'true';
-    return false;
-  }
-
   factory UserKaleidxScopeBean.fromJson(Map<String, dynamic> json) =>
       UserKaleidxScopeBean(
-        gateId: _toInt(json['gateId']),
-        isGateFound: _toBool(json['isGateFound']),
-        isKeyFound: _toBool(json['isKeyFound']),
-        isClear: _toBool(json['isClear']),
-        totalRestLife: _toInt(json['totalRestLife']),
-        totalAchievement: _toInt(json['totalAchievement']),
-        totalDeluxscore: _toInt(json['totalDeluxscore']),
-        bestAchievement: _toInt(json['bestAchievement']),
-        bestDeluxscore: _toInt(json['bestDeluxscore']),
-        bestAchievementDate: json['bestAchievementDate']?.toString() ?? '',
-        bestDeluxscoreDate: json['bestDeluxscoreDate']?.toString() ?? '',
-        playCount: _toInt(json['playCount']),
-        clearDate: json['clearDate']?.toString() ?? '',
-        lastPlayDate: json['lastPlayDate']?.toString() ?? '',
-        isInfoWatched: _toBool(json['isInfoWatched']),
+        gateId: jsonInt(json['gateId']),
+        isGateFound: jsonBool(json['isGateFound']),
+        isKeyFound: jsonBool(json['isKeyFound']),
+        isClear: jsonBool(json['isClear']),
+        totalRestLife: jsonInt(json['totalRestLife']),
+        totalAchievement: jsonInt(json['totalAchievement']),
+        totalDeluxscore: jsonInt(json['totalDeluxscore']),
+        bestAchievement: jsonInt(json['bestAchievement']),
+        bestDeluxscore: jsonInt(json['bestDeluxscore']),
+        bestAchievementDate: jsonString(json['bestAchievementDate']),
+        bestDeluxscoreDate: jsonString(json['bestDeluxscoreDate']),
+        playCount: jsonInt(json['playCount']),
+        clearDate: jsonString(json['clearDate']),
+        lastPlayDate: jsonString(json['lastPlayDate']),
+        isInfoWatched: jsonBool(json['isInfoWatched']),
       );
 
   static List<UserKaleidxScopeBean> listFromResponse(
     Map<String, dynamic> json,
-  ) {
-    final raw = json['userKaleidxScopeList'];
-    if (raw is! List) return const [];
-    return raw
-        .whereType<Map<String, dynamic>>()
-        .map(UserKaleidxScopeBean.fromJson)
-        .toList();
-  }
+  ) => jsonMapList(json['userKaleidxScopeList'])
+      .map(UserKaleidxScopeBean.fromJson)
+      .toList();
 }
